@@ -11,6 +11,7 @@ A DeepSeek Harness (DSH) plugin for building and verifying web and Electron UIs 
 - Select elements with hover/active outlines, then insert a structured reference into the DSH composer. The page-side picker also works from the **real browser window**.
 - Preview a workspace folder over a token-gated loopback server and reload it when files change.
 - Run a detected project dev server or an explicit command, stream logs, detect a localhost URL, and open it.
+- Attach to an Electron app's renderer over CDP with `webdev_electron_attach`; pair it with a `webdev_run` launch to capture main-process stdout/stderr via `webdev_logs`.
 - Give the agent full page detail: DOM/ARIA snapshot with refs, console, network, screenshots (PNG or JPEG).
 - Open any HTTP(S), `data:`, or `about:` URL, including loopback services.
 - Mirror the page in a headed Chrome/Edge window over CDP.

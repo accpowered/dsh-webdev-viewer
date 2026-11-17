@@ -264,8 +264,10 @@ export class BrowserViewService implements BrowserViewBackend {
   private readonly viewport: { width: number; height: number }
   private readonly now: () => number
   private readonly openSession: NonNullable<BrowserViewServiceOptions['openSession']>
+  private readonly configuredConfig: () => BrowserConnectionConfig
   private readonly resolveConfig: () => BrowserConnectionConfig
   private readonly authenticatedUrl: BrowserViewServiceOptions['authenticatedUrl']
+  private manualEndpoint: string | undefined
   private readonly idleCloseDays: () => number
   private readonly sweepIntervalMs: number
   private idleTimer: ReturnType<typeof setInterval> | undefined
@@ -305,7 +307,10 @@ export class BrowserViewService implements BrowserViewBackend {
     this.viewport = options.viewport ?? { width: DEFAULT_VIEWPORT.width, height: DEFAULT_VIEWPORT.height }
     this.now = options.now ?? Date.now
     this.openSession = options.openSession ?? openConfiguredSession
-    this.resolveConfig = options.resolveConfig ?? (() => ({ mode: 'isolated' }))
+    this.configuredConfig = options.resolveConfig ?? (() => ({ mode: 'isolated' }))
+    this.resolveConfig = () => this.manualEndpoint === undefined
+      ? this.configuredConfig()
+      : { mode: 'cdp', cdpEndpoint: this.manualEndpoint }
     this.authenticatedUrl = options.authenticatedUrl
     this.idleCloseDays = options.idleCloseDays ?? (() => 0)
     this.sweepIntervalMs = options.sweepIntervalMs ?? IDLE_SWEEP_INTERVAL_MS
@@ -1072,6 +1077,33 @@ export class BrowserViewService implements BrowserViewBackend {
     if (session !== undefined) await session.dispose()
     this.broadcast({ v: 1, kind: 'state', state: this.state() })
     if (this.sinks.size > 0) await this.startStreaming().catch(() => undefined)
+  }
+
+  /**
+   * Switch this service to an existing CDP endpoint, such as the renderer of
+   * an Electron app started with `--remote-debugging-port`.
+   *
+   * This is an attach-only path: the endpoint must be loopback HTTP(S) and is
+   * validated with the same parser as the configured real-browser endpoint.
+   * The debug port has no authentication; treat everything reachable through
+   * it as local code execution. Main-process JavaScript and stdout/stderr are
+   * not part of this protocol.
+   * @param endpoint - loopback CDP HTTP endpoint, e.g. `http://127.0.0.1:9222`.
+   * @returns the panel state after the switch.
+   */
+  async attachEndpoint(endpoint: string): Promise<BrowserPanelState> {
+    const parsed = parseCdpEndpoint(endpoint)
+    this.manualEndpoint = parsed.baseUrl
+    await this.reconfigure()
+    await this.requireSession()
+    return this.state()
+  }
+
+  /** Forget an explicit attach and return to the configured browser source. */
+  async detachEndpoint(): Promise<void> {
+    this.manualEndpoint = undefined
+    await this.reconfigure()
+    if (this.sinks.size > 0) await this.requireSession()
   }
 
   /**

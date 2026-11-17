@@ -569,6 +569,85 @@ title: ${value.title}
     },
   })
 
+  const attachEndpoint = defineTool({
+    name: 'webdev_electron_attach',
+    description: 'Attach the viewer to an Electron app renderer (or any Chromium CDP endpoint) that is already running with --remote-debugging-port=<port>. '
+      + 'This reuses the same CDP tab/screenshot/input/console/network path as the real browser; the app must have been started with the debug switch, because Electron cannot enable it afterwards. '
+      + 'The endpoint must be loopback HTTP(S), for example http://127.0.0.1:9222; a debug port has no authentication and is local code execution. '
+      + 'The sidebar shows the renderer mirror, not the native app window, and main-process JavaScript is not reachable through this port. '
+      + 'To capture main-process stdout/stderr, launch the app through webdev_run and read webdev_logs, then attach here. '
+      + 'This replaces the current browser attachment until webdev_electron_detach is called. '
+      + '中文触发词：连接Electron、附加Electron、调试Electron渲染进程。',
+    parameters: {
+      endpoint: {
+        type: 'string',
+        required: true,
+        description: 'Loopback CDP HTTP endpoint, e.g. http://127.0.0.1:9222.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          mode: { type: 'string', required: true },
+          endpoint: { type: 'string' },
+          tabs: { type: 'array', required: true, items: TAB_VIEW_SCHEMA },
+          activeTabId: {
+            required: true,
+            oneOf: [{ type: 'string' }, { type: 'null' }],
+          },
+          summary: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => renderJson(value),
+    },
+    execute: async (args) => {
+      const state = await service.attachEndpoint(args.endpoint)
+      return {
+        mode: state.mode ?? 'cdp',
+        ...state.cdpEndpoint === undefined ? {} : { endpoint: state.cdpEndpoint },
+        tabs: state.tabs,
+        activeTabId: state.activeTabId,
+        summary: `Attached to ${state.cdpEndpoint ?? args.endpoint}; the sidebar mirrors ${state.tabs.length} page target(s)`,
+      }
+    },
+  })
+
+  const detachEndpoint = defineTool({
+    name: 'webdev_electron_detach',
+    description: 'Detach the explicit Electron/CDP attachment and return to the configured browser source (isolated Chromium or the configured real browser). '
+      + 'Use it after testing an Electron app; it does not close the app. '
+      + '中文触发词：断开Electron、恢复浏览器源。',
+    parameters: {},
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          mode: { type: 'string', required: true },
+          tabs: { type: 'array', required: true, items: TAB_VIEW_SCHEMA },
+          activeTabId: {
+            required: true,
+            oneOf: [{ type: 'string' }, { type: 'null' }],
+          },
+          summary: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => renderJson(value),
+    },
+    execute: async () => {
+      await service.detachEndpoint()
+      const state = service.state()
+      return {
+        mode: state.mode ?? 'isolated',
+        tabs: state.tabs,
+        activeTabId: state.activeTabId,
+        summary: `Detached the explicit endpoint; current mode is ${state.mode ?? 'isolated'}`,
+      }
+    },
+  })
+
   const close = defineTool({
     name: 'webdev_close',
     description: 'Close browser tabs within the ownership rules of the selected mode. '
@@ -603,7 +682,7 @@ title: ${value.title}
     },
   })
 
-  return [navigate, click, type, press, scroll, snapshot, screenshot, consoleTool, networkTool, tabs, close]
+  return [navigate, click, type, press, scroll, snapshot, screenshot, consoleTool, networkTool, tabs, attachEndpoint, detachEndpoint, close]
 }
 
 /** Names of every tool this plugin registers, in registration order. */
@@ -618,5 +697,7 @@ export const BROWSER_TOOL_NAMES = [
   'webdev_console',
   'webdev_network',
   'webdev_tabs',
+  'webdev_electron_attach',
+  'webdev_electron_detach',
   'webdev_close',
 ] as const

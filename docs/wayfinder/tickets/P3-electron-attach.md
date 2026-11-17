@@ -1,9 +1,9 @@
 ---
 id: P3
 type: prototype
-status: open
-blocked_by: [G1, R5]
-owner: null
+status: in_progress
+blocked_by: []
+owner: lead
 write_scope: src/host/electron/, tests/electron/
 ---
 
@@ -39,6 +39,13 @@ The user explicitly wants Electron app development. The realistic boundary (rend
 - Check how the flag reaches the renderer in each template; some dev runners swallow extra args.
 - Keep the CDP endpoint loopback-only; treat the debug port as a local code-execution surface.
 - The upstream `browser-view` has an attach mode; reuse it rather than writing a second CDP client.
+
+## Progress (2026-11-17)
+
+- Added `webdev_electron_attach` / `webdev_electron_detach`. They switch the existing service to a validated loopback CDP endpoint at runtime and back to the configured source; the panel, snapshot/click/type/console/network/screenshot path is unchanged.
+- Verified the endpoint switch against the attached Edge CDP endpoint (one adopted page target survived attach/detach). This proves the attach plumbing, not an actual Electron app.
+- No standalone Electron binary was found in the workspace/installed programs, so the minimal Electron app, window visibility, main-process log lane, restart/reconnect, F12 contention, and orphan check remain unverified.
+- Intended workflow for a real app: start it with `--remote-debugging-port=9222`, optionally via `webdev_run` with an explicit command so main-process stdout/stderr appears in `webdev_logs`, then `webdev_electron_attach` endpoint `http://127.0.0.1:9222`. The panel mirrors the renderer, not the native window; main-process JS is not reachable on this port.
 
 ## Resolution
 
