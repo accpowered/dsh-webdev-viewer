@@ -247,6 +247,46 @@ export function createDesktopTools(deps: DesktopToolDeps): ToolDefinition[] {
     },
   })
 
+  const networkTool = defineTool({
+    name: 'webdev_desktop_network',
+    description: 'Return loaded-resource timings from the desktop webview the user sees. '
+      + 'The webview tag exposes no request/response status or pending/failed events; this is a performance-resource list, not a full network log. '
+      + 'Use the webdev_* CDP network tool when status codes matter. '
+      + '中文触发词：桌面网络请求、资源列表。',
+    parameters: {
+      limit: { type: 'integer', description: 'Number of recent resource entries, 1–500; defaults to 100.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          entries: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                url: { type: 'string', required: true },
+                initiatorType: { type: 'string', required: true },
+                duration: { type: 'integer', required: true },
+                transferSize: { type: 'integer', required: true },
+              },
+            },
+          },
+          summary: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => renderJson(value),
+    },
+    execute: async (args) => {
+      const limit = typeof args.limit === 'number' ? Math.max(1, Math.min(500, Math.trunc(args.limit))) : 100
+      const entries = await service.nativeNetwork(limit)
+      return { entries, summary: `${entries.length} desktop resource entr${entries.length === 1 ? 'y' : 'ies'}` }
+    },
+  })
+
   const screenshot = defineTool({
     name: 'webdev_desktop_screenshot',
     description: 'Capture the desktop webview the user sees as an image and return the image. '
@@ -318,5 +358,5 @@ title: ${value.title}
     },
   })
 
-  return [navigate, snapshot, click, type, press, scroll, consoleTool, screenshot]
+  return [navigate, snapshot, click, type, press, scroll, consoleTool, networkTool, screenshot]
 }

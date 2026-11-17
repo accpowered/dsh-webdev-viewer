@@ -294,6 +294,17 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
         const limit = typeof input.limit === 'number' ? input.limit : 100
         return consoleRef.current.slice(-limit)
       }
+      case 'network': {
+        const limit = typeof input.limit === 'number' ? Math.max(1, Math.min(500, Math.trunc(input.limit))) : 100
+        return await element.executeJavaScript(`(() => {
+          return performance.getEntriesByType('resource').slice(-${limit}).map((entry) => ({
+            url: entry.name,
+            initiatorType: entry.initiatorType || 'other',
+            duration: Math.round(entry.duration),
+            transferSize: typeof entry.transferSize === 'number' ? entry.transferSize : 0,
+          }));
+        })()`)
+      }
       case 'style-get': {
         const selector = typeof input.selector === 'string' ? input.selector : ''
         const properties = Array.isArray(input.properties) ? input.properties.filter((item): item is string => typeof item === 'string') : []
@@ -428,7 +439,11 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
           return
         }
         consoleRef.current.push({
-          level: String((event as ConsoleMessageEvent).level),
+          level: (event as ConsoleMessageEvent).level === 3
+            ? 'error'
+            : (event as ConsoleMessageEvent).level === 2
+              ? 'warning'
+              : (event as ConsoleMessageEvent).level === 1 ? 'info' : 'log',
           text: message,
           at: Date.now(),
         })

@@ -750,6 +750,29 @@ export class BrowserViewService implements BrowserViewBackend {
   }
 
   /**
+   * Resource timing from the native guest. The webview tag exposes no status
+   * codes or pending requests; this is a loaded-resource list, not a network log.
+   */
+  async nativeNetwork(limit = 100): Promise<Array<{
+    url: string
+    initiatorType: string
+    duration: number
+    transferSize: number
+  }>> {
+    const raw = await this.nativeRequest('network', { limit })
+    if (!Array.isArray(raw)) return []
+    return raw.filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+      .filter((entry) => typeof entry.url === 'string')
+      .map((entry) => ({
+        url: entry.url as string,
+        initiatorType: typeof entry.initiatorType === 'string' ? entry.initiatorType : 'other',
+        duration: typeof entry.duration === 'number' ? entry.duration : 0,
+        transferSize: typeof entry.transferSize === 'number' ? entry.transferSize : 0,
+      }))
+      .slice(-limit)
+  }
+
+  /**
    * Close one tab, drop every binding that pointed at it, and let the panels
    * fall back when the tab they were watching is the one that went away.
    *
