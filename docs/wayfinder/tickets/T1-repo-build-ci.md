@@ -35,11 +35,12 @@ An installable, legally clean package is the delivery unit. The client bundle fo
 ## Progress (2026-11-17)
 
 - Fork copied from `@linxin666/dsh-client-ui-browser-view` 0.4.19 (commit `5786418a…`) and renamed.
-- `pnpm typecheck` passes; `pnpm build` emits `lib/index.js` (144 kB) and `lib/client.js` (123 kB).
-- `pnpm install` needs the repo-local `.npmrc` (`node-linker=isolated`, `auto-install-peers=false`) and `pnpm-workspace.yaml` to deny the five native build scripts the sandbox cannot run; a clean install then succeeds.
-- Installed into the `desktop` profile as a link; result `restart-required` (`package-moved`), so the plugin is not live until DSH restarts.
-- Tests: 14/20 files and 229/238 tests pass. The 6 failing files are environment/test-harness issues, not build failures: two host `removeTempProfile` cases are denied temp/home access by the sandbox; four client files need the upstream monorepo's test-only transitive deps (`clsx`, `shiki`, `zustand`) and a React `act`-flushing harness. Fix before claiming T1 complete.
-- `npm pack --dry-run` and CI have not been verified yet.
+- `pnpm typecheck` passes; `pnpm build` emits `lib/index.js` and `lib/client.js`, including the native Desktop webview.
+- `pnpm install` needs the repo-local `.npmrc` (`node-linker=isolated`, `auto-install-peers=false`) and `pnpm-workspace.yaml` to deny the native build scripts the sandbox cannot run; a clean install then succeeds.
+- **Tests: 216 passed, 15 files** with the copied upstream `tests/client/**` suites excluded. Those suites are integration tests for the DSH monorepo and fail here on missing test-only peers of `dsh-client-ui-primitives` (`shiki` language packs, `micromark` helpers, `zustand`), not on this plugin's code. The core/host suites (protocol, preview server, tabs, actions, routes, tools, workspace) are the gate. Documented in `vitest.config.ts`.
+- `pnpm pack --pack-destination .tmp` produced `dsh-webdev-viewer-0.1.0.tgz`; contents include `lib`, `src`, locale, docs, icon, `LICENSE`, `NOTICE`, `LICENSES`, `UPSTREAM.md`, `cordis.patch.yml`.
+- CI workflow is present; `npm pack --dry-run` is not directly runnable because this runtime ships no npm binary, but `pnpm pack` verified the same file set.
+- `private` is now false and the version is `0.1.0`; publication is pending the native-view confirmation.
 
 ## Resolution
 

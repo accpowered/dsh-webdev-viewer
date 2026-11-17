@@ -1,8 +1,8 @@
 {
   "name": "dsh-webdev-viewer",
-  "description": "Right-sidebar Web/Electron development viewer for DeepSeek Harness: a real CDP browser the user and the agent share, with element picking, a temporary style inspector, static preview, live reload, project runner, Electron attach, and agent snapshot/console/network/screenshot tools.",
-  "version": "0.1.0-dev.0",
-  "private": true,
+  "description": "Right-sidebar Web/Electron development viewer for DeepSeek Harness: a native Desktop webview plus a CDP fallback, shared agent tools, element picking, static preview, live reload, project runner, and Electron attach.",
+  "version": "0.1.0",
+  "private": false,
   "icon": "icon.svg",
   "type": "module",
   "main": "lib/index.js",
@@ -93,6 +93,7 @@
   },
   "files": [
     "lib",
+    "src",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
@@ -101,7 +102,8 @@
     "docs",
     "LICENSE",
     "NOTICE",
-    "UPSTREAM.md"
+    "UPSTREAM.md",
+    "LICENSES"
   ],
   "license": "Apache-2.0"
 }

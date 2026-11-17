@@ -2,7 +2,7 @@
 
 A DeepSeek Harness (DSH) plugin for building and verifying web and Electron UIs **inside the right sidebar**, together with an agent.
 
-> Status: **working prototype (v0.1.0-dev)**. It builds, links into the Desktop profile, and the core flow is live-verified: native Desktop sidebar browser, real-browser attach, snapshot/click/type/console/screenshot, panel input, element pick-to-quote, static preview with live reload, project runner, and the CDP fallback. Not yet released; the native-webview agent bridge, style inspector, full test coverage, and the GitHub release remain.
+> Status: **v0.1.0 preview**. It builds, links into the Desktop profile, and the core flow is live-verified: native Desktop sidebar webview, real-browser CDP attach, snapshot/click/type/console/screenshot, element pick-to-quote, static preview with live reload, project runner, and Electron/CDP attach. Not yet published. The native-webview agent bridge, style inspector, native network capture, and full upstream client test harness remain.
 
 ## What it does
 
@@ -27,6 +27,22 @@ The CDP screencast remains the fallback for the web client (no Desktop bridge) a
 transport the agent tools use. The next step is a native-webview tool bridge so snapshot/click/type/
 screenshot can target the guest the user is actually looking at; until then the agent's CDP attachment
 is a separate, explicitly labelled surface.
+
+## Known limitations
+
+- **Native agent bridge pending (P5).** The native Desktop guest is interactive for the user and its
+  picker works, but `webdev_snapshot/click/type/...` still target the CDP attachment. Use the Native/CDP
+  switch to compare; P5 is the next correctness task.
+- **Style inspector not in 0.1.** The panel picks elements and quotes them; temporary CSS editing is
+  still planned (P4).
+- **Electron is renderer attach only.** A debug port must exist at launch; native menus/dialogs/window
+  chrome and main-process JavaScript are not reachable. Main-process text logs come from a
+  `webdev_run` launch and `webdev_logs`.
+- **Native network capture is limited.** The `<webview>` tag does not expose request/response events;
+  CDP mode remains the full network path.
+- **Web build has no native bridge.** It uses the CDP mirror; the native surface requires DSH Desktop.
+- **Debug ports have no authentication.** They are local code execution; keep them loopback-only and
+  close them when finished.
 
 ## Design direction
 
