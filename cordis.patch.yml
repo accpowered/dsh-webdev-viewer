@@ -1,0 +1,6 @@
+# dsh-webdev-viewer bundle patch.
+# One Host row: the CDP browser service, agent tools, preview/runner routes,
+# and the panel socket. The client half is discovered through dsh.client.
+- insert:
+    - id: ui-webdev
+      name: dsh-webdev-viewer

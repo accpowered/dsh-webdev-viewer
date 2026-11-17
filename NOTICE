@@ -1,0 +1,22 @@
+dsh-webdev-viewer
+Copyright 2026 accpowered and contributors
+
+This product is planned to include software derived from:
+
+  dsh-browser-view
+  Package: @linxin666/dsh-client-ui-browser-view 0.4.19
+  Upstream: https://github.com/zhu1090093659/dsh-web
+  Path: packages/dsh-browser-view
+  Copyright (c) the dsh-web contributors
+  Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+  dsh-web shared build preset
+  Upstream: https://github.com/zhu1090093659/dsh-web
+  Paths: shared/tsdown.client.ts, shared/web-platform.ts
+  Copyright (c) the dsh-web contributors
+  Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Modifications by this project are described in UPSTREAM.md. The upstream
+README, AGENTS.md, package.json, and cordis.patch.yml are retained verbatim
+under docs/upstream/ for attribution and reference. This NOTICE is a draft until
+the upstream author confirms the governing license in writing.
