@@ -257,15 +257,14 @@ describe('tab bookkeeping', () => {
     await expect(manager.captureScreenshot('tab-1')).resolves.toBe('JPEG-BASE64')
   })
 
-  it('operator captures a screenshot without parameters and the page receives the same three fields as before', async () => {
-    // Given a tab and a manager on the default JPEG quality
+  it('operator captures a screenshot without parameters and the page receives a lossless PNG', async () => {
+    // Given a tab and a manager with default capture settings
     // When a screenshot is captured with no parameters
-    // Then the page is asked for exactly the JPEG payload this call has always sent
+    // Then the page is asked for a PNG that does not introduce JPEG ringing
     const { transport, manager } = await openManager()
     await manager.captureScreenshot('tab-1')
     expect(transport.lastCall('Page.captureScreenshot')?.params).toEqual({
-      format: 'jpeg',
-      quality: DEFAULT_JPEG_QUALITY,
+      format: 'png',
       captureBeyondViewport: false,
     })
   })

@@ -29,6 +29,17 @@ This product is planned to include software derived from:
   half; the preview server, token model, process ownership, and shell execution
   are this project's.
 
+  dsh-client-ui-sidebar-browser
+  Package: @deepseek-ai/dsh-client-ui-sidebar-browser 0.2.2-rc.3
+  Upstream: https://github.com/deepseek-ai/deepseek-harness
+  Path: packages/client/ui-sidebar-browser
+  Copyright (c) 2026 DeepSeek
+  Licensed under the MIT License (see LICENSES/dsh-client-ui-sidebar-browser-MIT.txt).
+  The native webview lifecycle, dshDesktop.browser bridge use, guest partition/lease
+  pattern, and content container placement in src/client/native-browser.tsx are
+  adapted from this package. The page picker, panel chrome, quoting and agent tools
+  are this project's.
+
 Modifications by this project are described in UPSTREAM.md. The upstream
 README, AGENTS.md, package.json, and cordis.patch.yml are retained verbatim
 under docs/upstream/ for attribution and reference. This NOTICE is a draft until

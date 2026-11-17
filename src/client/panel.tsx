@@ -50,6 +50,7 @@ import {
   type BrowserViewSocketStatus,
 } from './socket.ts'
 import css from './panel.module.css'
+import { NativeBrowser, nativeBrowserAvailable, type NativeBrowserHandle } from './native-browser.tsx'
 
 /** Page-side socket factory; tests inject a fake transport through it. */
 export type BrowserViewSocketFactory = (handlers: BrowserViewSocketHandlers) => BrowserViewSocket
@@ -178,6 +179,14 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   const [hoverPick, setHoverPick] = useState<BrowserPickedElement | null>(null)
   const [pickError, setPickError] = useState<string | null>(null)
   const [pickNotice, setPickNotice] = useState<string | null>(null)
+  const nativeAvailable = useMemo(() => nativeBrowserAvailable(), [])
+  const [nativeMode, setNativeMode] = useState(() => nativeBrowserAvailable())
+  const [nativeUrl, setNativeUrl] = useState('')
+  const [nativeTitle, setNativeTitle] = useState('')
+  const [nativeLoading, setNativeLoading] = useState(false)
+  const [nativeAddress, setNativeAddress] = useState('')
+  const [nativeError, setNativeError] = useState<string | null>(null)
+  const nativeRef = useRef<NativeBrowserHandle | null>(null)
   const socketRef = useRef<BrowserViewSocket | null>(null)
   const frameHostRef = useRef<HTMLDivElement | null>(null)
   const imageRef = useRef<HTMLImageElement | null>(null)
@@ -306,18 +315,26 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   // reported no error, which keeps the null check off the JSX branch.
   const visibleFrame = effectiveError === null ? frame : null
   const dataUrl = visibleFrame === null ? null : `data:image/png;base64,${visibleFrame.data}`
+  const nativeActive = nativeAvailable && nativeMode
+  const pageTitle = activeTab === null || activeTab.title.length === 0 ? undefined : activeTab.title
+  const url = activeTab?.url ?? ''
+  const displayUrl = nativeActive ? nativeUrl || url : url
+  const displayTitle = nativeActive ? nativeTitle || pageTitle : pageTitle
+  const effectiveLoading = nativeActive ? nativeLoading : loading
   // The marker names what the viewer is actually looking at: the socket's phase
   // first (nothing is live before the host answers), then the page's own load
   // state. The same three strings the trace footer used to carry.
-  const statusLabel = status !== 'open'
-    ? t('panel.status.connecting')
-    : loading ? t('panel.status.loading') : t('panel.status.live')
+  const statusLabel = nativeActive
+    ? nativeLoading ? t('panel.native.loading') : t('panel.native.ready')
+    : status !== 'open'
+      ? t('panel.status.connecting')
+      : loading ? t('panel.status.loading') : t('panel.status.live')
   // Three of the product's five dot states, in the order a viewer meets them:
   // nothing reached yet, a page still loading, a settled live picture.
-  const dotState: StateDotState = status !== 'open' ? 'idle' : loading ? 'ongoing' : 'done'
-  const modeLabel = state.mode === 'cdp' ? t('panel.mode.real') : t('panel.mode.isolated')
-  const pageTitle = activeTab === null || activeTab.title.length === 0 ? undefined : activeTab.title
-  const url = activeTab?.url ?? ''
+  const dotState: StateDotState = nativeActive
+    ? nativeLoading ? 'ongoing' : 'done'
+    : status !== 'open' ? 'idle' : loading ? 'ongoing' : 'done'
+  const modeLabel = nativeActive ? t('panel.mode.native') : state.mode === 'cdp' ? t('panel.mode.real') : t('panel.mode.isolated')
 
   frameDataRef.current = visibleFrame
   const frameVisible = dataUrl !== null
@@ -353,16 +370,21 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     return () => { host.removeEventListener('wheel', onWheel) }
   }, [frameVisible])
 
-  // Make the page render at the width it is actually displayed at. Without
-  // this the host keeps the browser window's viewport and a ~400px sidebar
-  // scales a desktop page down until the text is unreadable.
+  // Set the page viewport to the pixels the panel actually occupies: the
+  // image's displayed width (object-fit can make it narrower than the host)
+  // and the host's available height. Sending the image's natural height would
+  // leave a short page with a blank strip; sending the host's outer width is
+  // what made an 863px page render into a narrower sidebar.
   useEffect(() => {
+    if (nativeActive) return
     const host = frameHostRef.current
     if (host === null) return
+    const image = imageRef.current
     let timer: ReturnType<typeof setTimeout> | undefined
     let last = { width: 0, height: 0 }
     const send = (): void => {
-      const width = Math.round(host.clientWidth)
+      const content = contentRectOf(image)
+      const width = Math.round(content?.width ?? host.clientWidth)
       const height = Math.round(host.clientHeight)
       if (width < 240 || height < 240) return
       if (Math.abs(width - last.width) < 2 && Math.abs(height - last.height) < 2) return
@@ -378,12 +400,19 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
       timer = setTimeout(send, 120)
     })
     observer.observe(host)
+    if (image !== null) observer.observe(image)
     send()
+    // A data URL can still be decoding when the effect runs; naturalWidth is 0
+    // until it completes, so retry once after decode instead of quietly
+    // keeping the host size.
+    if (image !== null && image.naturalWidth === 0 && typeof image.decode === 'function') {
+      void image.decode().then(send).catch(() => undefined)
+    }
     return () => {
       observer.disconnect()
       if (timer !== undefined) clearTimeout(timer)
     }
-  }, [frameVisible, state.activeTabId])
+  }, [frameVisible, state.activeTabId, nativeActive])
 
   const pointOf = (clientX: number, clientY: number): { x: number; y: number } | null => {
     const host = frameHostRef.current
@@ -596,17 +625,32 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     hoverRequestRef.current = null
     setPickError(null)
     setPickNotice(null)
-    // Preference: a host that understands pick-mode lets the page own the
-    // gesture. If it does not ack, the panel-side picker remains the fallback.
+    // Native mode injects the picker into the guest; CDP mode asks the host to
+    // do the same in the attached page.
+    if (nativeActive) return
     socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'pick-mode', enabled: next })
+  }
+
+  const toggleNativeMode = (): void => {
+    if (!nativeAvailable) return
+    const next = !nativeMode
+    setNativeMode(next)
+    setPicking(false)
+    setPagePickerActive(false)
+    setPickError(null)
+    setPickNotice(null)
+    setNativeError(null)
+    if (next) setNativeAddress(nativeUrl || url)
   }
 
   const sendPicks = (): void => {
     if (picks.length === 0) return
-    const quote = formatPicks(picks, url)
+    const quote = formatPicks(picks, nativeActive ? nativeUrl || url : url)
     const accepted = inputActions?.insertQuote(quote)
     if (accepted === true) {
-      socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'pick-mode', enabled: false })
+      if (!nativeActive) {
+        socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'pick-mode', enabled: false })
+      }
       setPicks([])
       setPicking(false)
       setPagePickerActive(false)
@@ -647,48 +691,106 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   // can know that name. Publishing in an effect keeps render pure; the cleanup
   // clears the entry so a closed tab leaves no stale name behind.
   useEffect(() => {
-    liveTitle?.set(sessionId, pageTitle)
+    liveTitle?.set(sessionId, displayTitle)
     return () => { liveTitle?.set(sessionId, undefined) }
-  }, [liveTitle, sessionId, pageTitle])
+  }, [liveTitle, sessionId, displayTitle])
 
   return (
     <div className={css.root} data-dsh-plugin={BROWSER_VIEW_PLUGIN} data-dsh-part={BROWSER_VIEW_PARTS.panel}>
       <div className={css.toolbar} data-dsh-part={BROWSER_VIEW_PARTS.toolbar}>
         <div className={css.addressBox} data-dsh-part={BROWSER_VIEW_PARTS.address}>
-          <input
-            className={css.address}
-            type="text"
-            readOnly
-            value={url}
-            title={url.length > 0 ? url : undefined}
-            placeholder={t('panel.url.empty')}
-            aria-label={t('panel.address.label')}
-            spellCheck={false}
-            // Selecting on click is the address bar's own gesture: the whole
-            // address is ready to copy without a second control.
-            onFocus={(event) => { event.currentTarget.select() }}
-            onClick={(event) => { event.currentTarget.select() }}
-          />
+          {nativeActive ? (
+            <input
+              className={css.address}
+              type="text"
+              value={nativeAddress.length > 0 ? nativeAddress : displayUrl}
+              title={displayUrl.length > 0 ? displayUrl : undefined}
+              placeholder={t('panel.native.address')}
+              aria-label={t('panel.address.label')}
+              spellCheck={false}
+              onChange={(event) => { setNativeAddress(event.currentTarget.value) }}
+              onFocus={(event) => { event.currentTarget.select() }}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter') return
+                event.preventDefault()
+                const next = nativeAddress.trim()
+                if (next.length === 0) return
+                setNativeError(null)
+                nativeRef.current?.loadUrl(next)
+              }}
+            />
+          ) : (
+            <input
+              className={css.address}
+              type="text"
+              readOnly
+              value={url}
+              title={url.length > 0 ? url : undefined}
+              placeholder={t('panel.url.empty')}
+              aria-label={t('panel.address.label')}
+              spellCheck={false}
+              // Selecting on click is the address bar's own gesture: the whole
+              // address is ready to copy without a second control.
+              onFocus={(event) => { event.currentTarget.select() }}
+              onClick={(event) => { event.currentTarget.select() }}
+            />
+          )}
         </div>
-        <button
-          type="button"
-          className={cx(css.tool, css.toolLabeled, interact && css.toolActive)}
-          title={interact ? t('panel.toolbar.watch') : t('panel.toolbar.interact')}
-          aria-label={interact ? t('panel.toolbar.watch') : t('panel.toolbar.interact')}
-          aria-pressed={interact}
-          disabled={activeTab === null}
-          onClick={() => { setInteract((value) => !value) }}
-        >
-          {interact ? <CursorIcon /> : <EyeIcon />}
-          <span className={css.toolLabel}>{interact ? t('panel.toolbar.interactShort') : t('panel.toolbar.watchShort')}</span>
-        </button>
+        {nativeAvailable && (
+          <button
+            type="button"
+            className={cx(css.tool, css.toolLabeled, nativeActive && css.toolActive)}
+            title={nativeActive ? t('panel.native.switchToCdp') : t('panel.native.switchToNative')}
+            aria-label={nativeActive ? t('panel.native.switchToCdp') : t('panel.native.switchToNative')}
+            aria-pressed={nativeActive}
+            onClick={toggleNativeMode}
+          >
+            <span className={css.toolLabel}>{nativeActive ? t('panel.native.label') : t('panel.native.cdp')}</span>
+          </button>
+        )}
+        {nativeActive && (
+          <>
+            <button
+              type="button"
+              className={css.tool}
+              title={t('panel.native.back')}
+              aria-label={t('panel.native.back')}
+              onClick={() => { nativeRef.current?.goBack() }}
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              className={css.tool}
+              title={t('panel.native.forward')}
+              aria-label={t('panel.native.forward')}
+              onClick={() => { nativeRef.current?.goForward() }}
+            >
+              ›
+            </button>
+          </>
+        )}
+        {!nativeActive && (
+          <button
+            type="button"
+            className={cx(css.tool, css.toolLabeled, interact && css.toolActive)}
+            title={interact ? t('panel.toolbar.watch') : t('panel.toolbar.interact')}
+            aria-label={interact ? t('panel.toolbar.watch') : t('panel.toolbar.interact')}
+            aria-pressed={interact}
+            disabled={activeTab === null}
+            onClick={() => { setInteract((value) => !value) }}
+          >
+            {interact ? <CursorIcon /> : <EyeIcon />}
+            <span className={css.toolLabel}>{interact ? t('panel.toolbar.interactShort') : t('panel.toolbar.watchShort')}</span>
+          </button>
+        )}
         <button
           type="button"
           className={cx(css.tool, css.toolLabeled, picking && css.toolActive)}
           title={t('panel.toolbar.pick')}
           aria-label={t('panel.toolbar.pick')}
           aria-pressed={picking}
-          disabled={activeTab === null}
+          disabled={nativeActive ? false : activeTab === null}
           onClick={togglePicking}
         >
           <PickIcon />
@@ -698,17 +800,17 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           className={css.status}
           data-dsh-part={BROWSER_VIEW_PARTS.status}
           aria-live="polite"
-          title={state.cdpEndpoint ?? modeLabel}
+          title={nativeActive ? displayUrl : state.cdpEndpoint ?? modeLabel}
         >
           <StateDot state={dotState} size={10} />
           <span className={css.statusText}>{statusLabel}</span>
           <span className={css.mode}>{modeLabel}</span>
-          {visibleFrame !== null && (
+          {!nativeActive && visibleFrame !== null && (
             <span className={css.frameSize} title={t('panel.toolbar.frameHint')}>
               {visibleFrame.width}×{visibleFrame.height} · PNG
             </span>
           )}
-          {state.mode === 'cdp' && state.cdpEndpoint !== undefined && (
+          {!nativeActive && state.mode === 'cdp' && state.cdpEndpoint !== undefined && (
             <span className={css.endpoint}>{state.cdpEndpoint}</span>
           )}
         </span>
@@ -717,9 +819,10 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           className={css.tool}
           title={t('panel.toolbar.refresh')}
           aria-label={t('panel.toolbar.refresh')}
-          disabled={activeTab === null}
+          disabled={!nativeActive && activeTab === null}
           onClick={() => {
-            socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'request-frame' })
+            if (nativeActive) nativeRef.current?.reload()
+            else socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'request-frame' })
           }}
         >
           <IconRefreshOutlineRegular />
@@ -744,7 +847,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           {pickNotice !== null && <span className={css.pickNotice} role="status">{pickNotice}</span>}
         </div>
       )}
-      {state.tabs.length > 1 && (
+      {state.tabs.length > 1 && !nativeActive && (
         <div className={css.tabs} role="tablist" data-dsh-part={BROWSER_VIEW_PARTS.tabs}>
           {state.tabs.map((tab) => (
             <button
@@ -764,7 +867,37 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
         </div>
       )}
       <div className={css.content}>
-        {effectiveError !== null ? (
+        {nativeActive ? (
+          <div className={css.nativeStack}>
+            <NativeBrowser
+              ref={nativeRef}
+              sessionId={sessionId ?? 'anonymous'}
+              url={url}
+              picking={picking}
+              onUrl={(next) => { setNativeUrl(next); setNativeAddress(next) }}
+              onTitle={(next) => { setNativeTitle(next) }}
+              onLoading={(next) => { setNativeLoading(next) }}
+              onPick={(element) => {
+                setPicks((current) => [...current, element])
+                setPickError(null)
+                setPickNotice(null)
+              }}
+              onError={(message) => { setNativeError(message) }}
+            />
+            {nativeError !== null && (
+              <div className={css.nativeError} role="alert">
+                <span>{nativeError}</span>
+                <button
+                  type="button"
+                  className={css.pickButton}
+                  onClick={() => { setNativeMode(false); setNativeError(null) }}
+                >
+                  {t('panel.native.cdp')}
+                </button>
+              </div>
+            )}
+          </div>
+        ) : effectiveError !== null ? (
           <div className={css.error} data-dsh-part={BROWSER_VIEW_PARTS.error} role="alert">
             <span className={css.errorTitle}>{t('panel.error.title')}</span>
             <span className={css.errorBody}>{effectiveError.message}</span>

@@ -39,26 +39,27 @@ The user's first look:
   sidebar.
 - The page was **blurry** at the docked width.
 - Interact clicks did not visibly respond, and there were no selection markers.
-- Earlier: the real browser window was activated and its page elements interacted
-  normally, but development picking was not available there.
+- The user pointed at the shipped sidebar browser: the Desktop app already has a
+  native browser surface, and asked for that in the plugin.
 
-Actions taken in response:
+Resolution:
 
-- Page-side picker (adapted from the MIT `dsh-web-preview-panel` marking code) lets
-  a click in the **real browser window** become a pick; hover/active outlines are
-  drawn in the page.
-- `viewport` sizes the page to the panel's content box; `pick-mode` and the PNG
-  screencast remove JPEG blur.
-- The page is now visibly interactive in the real browser; the sidebar remains a
-  live CDP view.
+- Found the shipped `@deepseek-ai/dsh-client-ui-sidebar-browser` (MIT): DSH Desktop
+  exposes `globalThis.dshDesktop.browser` and enables Electron's `<webview>` tag. The
+  shipped browser acquires a guest partition/lease through the bridge and mounts a
+  real webview in the sidebar.
+- Implemented `src/client/native-browser.tsx` using that same bridge/tag. On Desktop
+  the panel now mounts a real guest renderer: native text, native scrolling, native
+  input, no JPEG/PNG frame pipeline. The address bar navigates the guest, back/forward/
+  refresh operate on it, and the page picker runs via `executeJavaScript` and reports
+  picks through a console marker.
+- CDP remains the fallback on the web (no Desktop bridge) and the current agent-tool
+  transport. The native guest is not yet exposed to `webdev_snapshot/click/...`; that
+  bridge is the next task, and the README/panel label it explicitly.
+- A mode button switches between Native and CDP for diagnosis/fallback.
 
-The remaining question is architectural, not cosmetic: the installed DSH UI
-guidance says to render plugin pages as React components and **not** to serve an
-HTML page from the Host and embed it in an iframe. The shell gives plugins no
-native BrowserView/webview. A literal browser surface inside the sidebar is not
-available at the plugin layer; the shipped browser tab also uses CDP. The native
-surface is the real browser window, with the sidebar as controller/mirror. Record
-the user's decision before changing the architecture.
+The native mode is the answer to the user's requirement; verify it visually with a
+hard refresh and then build the native tool bridge.
 
 ## Resolution
 

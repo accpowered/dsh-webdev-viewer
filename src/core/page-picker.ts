@@ -18,6 +18,9 @@
 /** CDP binding the page calls with one JSON payload. */
 export const PAGE_PICKER_BINDING = '__dshWebdevPick'
 
+/** Console prefix used when the page has no CDP binding (native webview). */
+export const PAGE_PICKER_CONSOLE_PREFIX = '__DSH_WEBDEV_PICK__'
+
 /**
  * Script evaluated in the page to install (or re-enable) the picker.
  * @returns a self-invoking expression.
@@ -146,6 +149,7 @@ function installPagePicker(): void {
     }
     const binding = w.__dshWebdevPick
     if (typeof binding === 'function') binding(JSON.stringify(payload))
+    else console.log('__DSH_WEBDEV_PICK__' + JSON.stringify(payload))
   }
 
   const onKey = (event: KeyboardEvent): void => {

@@ -2,13 +2,14 @@
 
 A DeepSeek Harness (DSH) plugin for building and verifying web and Electron UIs **inside the right sidebar**, together with an agent.
 
-> Status: **working prototype (v0.1.0-dev)**. It builds, links into the Desktop profile, and the core flow is live-verified: real-browser attach, snapshot/click/type/console/screenshot, panel input, element pick-to-quote, static preview with live reload, project runner, and a PNG screencast. Not yet released; style inspector, Electron attach, full test coverage, and the GitHub release remain.
+> Status: **working prototype (v0.1.0-dev)**. It builds, links into the Desktop profile, and the core flow is live-verified: native Desktop sidebar browser, real-browser attach, snapshot/click/type/console/screenshot, panel input, element pick-to-quote, static preview with live reload, project runner, and the CDP fallback. Not yet released; the native-webview agent bridge, style inspector, full test coverage, and the GitHub release remain.
 
 ## What it does
 
-- Drive a real Chromium page from a right-sidebar tab: click, type, scroll, navigate, inspect.
-- Let the user and the agent drive the **same page**; human clicks and agent actions hit the same CDP target.
-- Select elements with hover/active outlines, then insert a structured reference into the DSH composer. The page-side picker also works from the **real browser window**.
+- Mount a **native Electron webview** in the right sidebar on DSH Desktop (the same renderer bridge the shipped sidebar browser uses), with a CDP mirror fallback on the web.
+- Drive a real Chromium page from the tab: click, type, scroll, navigate, inspect.
+- Let the user and the agent drive the **same page** through the CDP tools when attached to the real browser; the native webview is the interactive Desktop surface.
+- Select elements with hover/active outlines, then insert a structured reference into the DSH composer. The page-side picker works in the native webview and in the real browser window.
 - Preview a workspace folder over a token-gated loopback server and reload it when files change.
 - Run a detected project dev server or an explicit command, stream logs, detect a localhost URL, and open it.
 - Attach to an Electron app's renderer over CDP with `webdev_electron_attach`; pair it with a `webdev_run` launch to capture main-process stdout/stderr via `webdev_logs`.
@@ -18,12 +19,14 @@ A DeepSeek Harness (DSH) plugin for building and verifying web and Electron UIs 
 
 ## Architecture truth
 
-The sidebar tab is a **live CDP view**: Chromium renders the page, and the tab displays lossless PNG
-frames while forwarding trusted pointer/key events back to it. It is not a native browser surface.
-The installed DSH plugin model renders a React slot and gives plugins no native `BrowserView`/`webview`;
-the UI guidance also says not to serve an HTML page from the Host and embed it in an iframe. The shipped
-`browser-view` tab has the same architecture. For native rendering and full browser chrome, use the
-attached real browser window; the sidebar is the controller/mirror and the element-picking surface.
+DSH Desktop exposes a renderer-side browser bridge (`globalThis.dshDesktop.browser`) and enables
+Electron's `<webview>` tag; the shipped sidebar browser uses the same pair. Our panel uses it to mount
+a **real guest renderer in the sidebar**, so text, scrolling and input are native, not frames.
+
+The CDP screencast remains the fallback for the web client (no Desktop bridge) and is still the
+transport the agent tools use. The next step is a native-webview tool bridge so snapshot/click/type/
+screenshot can target the guest the user is actually looking at; until then the agent's CDP attachment
+is a separate, explicitly labelled surface.
 
 ## Design direction
 

@@ -36,6 +36,7 @@ See [`docs/verification/2026-11-17-live.md`](../../verification/2026-11-17-live.
 - Agent tools verified: snapshot, type, click, console, screenshot; network/scroll/press not individually exercised.
 - Panel socket smoke test verified `pick-result`, `input`, `viewport` (390×800 frames) and `pick-mode`.
 - Page-side picker verified: a click in the page returns selector/classes/box and draws `dsh-wvp-hover`/`dsh-wvp-active`; this is the path that makes the **real browser window** a development surface, not only the panel.
+- Native Desktop mode implemented: the panel mounts the same Electron `<webview>`/`dshDesktop.browser` pair as the shipped sidebar browser. This is the native sidebar surface the user asked for; it must be visually verified after a hard refresh. The agent tools still use CDP until the native bridge lands.
 - Remaining: refresh/open the panel and verify its pointer mapping, Pick button, quote insertion, docked readability, and latency. Static preview/live reload, runner and Electron are later phases.
 
 ## Resolution

@@ -223,7 +223,7 @@ describe('webdev_screenshot', () => {
 
     const captures = browser.transport.callsOf('Page.captureScreenshot').slice(before)
     expect(captures).toHaveLength(1)
-    expect(captures[0]?.params).toEqual({ format: 'jpeg', quality: 70, captureBeyondViewport: false })
+    expect(captures[0]?.params).toEqual({ format: 'jpeg', quality: 82, captureBeyondViewport: false })
 
     expect(saved[0]?.mediaType).toBe('image/jpeg')
     expect(saved[0]?.name).toBe('webdev-tab-1.jpg')
