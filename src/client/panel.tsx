@@ -731,12 +731,13 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   }, [liveTitle, sessionId, displayTitle])
 
   // Tell the host which panel owns the desktop guest so desktop_* tools can
-  // route requests to this exact webview. The socket buffers before it opens.
+  // route requests to this exact webview. Re-send whenever the socket reaches
+  // open again: a host reload reconnects the socket without remounting this body.
   useEffect(() => {
-    if (!nativeActive) return
+    if (!nativeActive || status !== 'open') return
     socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'native-attach', sessionId })
     return () => { socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'native-detach' }) }
-  }, [nativeActive, sessionId])
+  }, [nativeActive, status, sessionId])
 
   return (
     <div className={css.root} data-dsh-plugin={BROWSER_VIEW_PLUGIN} data-dsh-part={BROWSER_VIEW_PARTS.panel}>

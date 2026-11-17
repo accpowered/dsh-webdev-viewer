@@ -727,7 +727,9 @@ export class BrowserViewService implements BrowserViewBackend {
     if (typeof payload.data !== 'string' || payload.data.length === 0) throw new Error('the screenshot was empty')
     return {
       data: payload.data,
-      mediaType: format === 'jpeg' ? 'image/jpeg' : 'image/png',
+      // capturePage's data URL is PNG; the desktop guest has no JPEG encoder in
+      // the renderer, so keep the bytes and the declared type in agreement.
+      mediaType: 'image/png',
       width: typeof payload.width === 'number' ? payload.width : 0,
       height: typeof payload.height === 'number' ? payload.height : 0,
       url: typeof payload.url === 'string' ? payload.url : '',

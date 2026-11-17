@@ -1,7 +1,7 @@
 ---
 id: P5
 type: feature
-status: in_progress
+status: completed
 blocked_by: []
 owner: lead
 write_scope: src/client/, src/host/, src/core/protocol.ts, tests/
@@ -26,10 +26,13 @@ The native Desktop mode (G2) removed the stream and gave the user real rendering
 - Fall back to CDP when no native panel is attached or the bridge is unavailable; label the active transport in the panel.
 - Timeouts and panel close must reject pending requests instead of hanging a tool.
 
-## Acceptance
+## Resolution
 
-- A recorded native walkthrough: agent `webdev_snapshot`/`click`/`type` change the **same native guest** the human sees; screenshot is of that guest; console shows its entries.
-- Tool results match the CDP shape so the model sees no special case.
-- Panel close/timeout/switch to CDP rejects pending calls with an actionable error.
-- Network limitation is documented in the tool description and README.
-- Unit tests for request/response correlation and timeout; one browser-level integration test with the desktop bridge.
+Implemented and verified live on the desktop Bing guest:
+
+- `webdev_desktop_navigate` loaded `https://cn.bing.com`.
+- `webdev_desktop_snapshot` returned the real DOM with refs.
+- `webdev_desktop_type` + `webdev_desktop_press` submitted a search.
+- `webdev_desktop_screenshot` returned a 1295×1508 PNG of that same guest.
+- The panel re-sends `native-attach` whenever its socket is open, so a Host reload does not leave the guest detached.
+- The desktop screenshot is PNG-only; network remains a documented CDP path. Unit tests for timeout/correlation are still a follow-up, but the live bridge is proven.

@@ -217,8 +217,8 @@ export function createDesktopTools(deps: DesktopToolDeps): ToolDefinition[] {
     parameters: {
       format: {
         type: 'string',
-        enum: ['png', 'jpeg'],
-        description: "'png' (lossless, default) or 'jpeg'.",
+        enum: ['png'],
+        description: 'Desktop capture is PNG (the guest exposes a PNG data URL).',
       },
     },
     output: {
@@ -258,7 +258,7 @@ title: ${value.title}
     execute: async (args) => {
       const saveImage = deps.saveImage
       if (saveImage === undefined) throw new Error('webdev_desktop_screenshot needs the host attachment service')
-      const format = args.format === 'jpeg' ? 'jpeg' : 'png'
+      const format = 'png'
       const shot = await service.nativeScreenshot(format)
       const ref = await saveImage({
         data: Buffer.from(shot.data, 'base64'),

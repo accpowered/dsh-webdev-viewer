@@ -30,9 +30,9 @@ socket; it must be hard-refreshed into the client before the first attach.
 
 ## Known limitations
 
-- **Desktop tool bridge (new).** The `webdev_desktop_*` family targets the native guest through the
-  panel socket; use it when the desktop surface is showing. It needs the panel hard-refreshed/reopened
-  once so the attach command is registered. CDP tools still target the separate attachment.
+- **Desktop tool bridge.** `webdev_desktop_navigate/snapshot/click/type/press/scroll/screenshot` target
+  the native guest through the panel socket. A Host reload causes the panel to re-announce itself on the
+  next socket open. The CDP family remains available for the separate real-browser attachment.
 - **Style inspector not in 0.1.** The panel picks elements and quotes them; temporary CSS editing is
   still planned (P4).
 - **Electron is renderer attach only.** A debug port must exist at launch; native menus/dialogs/window
