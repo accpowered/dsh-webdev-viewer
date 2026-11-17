@@ -83,5 +83,5 @@ Open, unblocked, unclaimed tickets:
 | P4 | prototype | Visual style inspector prototype | blocked | G1, R7, P1 | — | [P4](tickets/P4-style-inspector.md) |
 | T1 | task | Package, build, CI, license, attribution | in_progress | — | lead | [T1](tickets/T1-repo-build-ci.md) |
 | T4 | task | Locked spec and ADRs | open | G1, R1–R7 | — | [T4](tickets/T4-spec-adr.md) |
-| T2 | task | Install and verify in DSH Desktop | blocked | P1 | — | [T2](tickets/T2-install-verify.md) |
+| T2 | task | Install and verify in DSH Desktop | in_progress | P1 | lead | [T2](tickets/T2-install-verify.md) |
 | T3 | task | Docs, packaging, release, GitHub publish | blocked | P1, P2, P3, P4 | — | [T3](tickets/T3-docs-release.md) |
