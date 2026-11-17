@@ -331,9 +331,9 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
       const current = frameDataRef.current
       if (!interactRef.current || current === null) return
       const target = imageRef.current
-      const rect = target === null ? host.getBoundingClientRect() : target.getBoundingClientRect()
+      const rect = contentRectOf(target) ?? host.getBoundingClientRect()
       if (rect.width <= 0 || rect.height <= 0) return
-      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) return
+      if (event.clientX < rect.left || event.clientX > rect.left + rect.width || event.clientY < rect.top || event.clientY > rect.top + rect.height) return
       event.preventDefault()
       const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? current.height : 1
       socketRef.current?.send({
@@ -389,10 +389,9 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     const host = frameHostRef.current
     const current = frameDataRef.current
     if (host === null || current === null) return null
-    const target = imageRef.current
-    const rect = target === null ? host.getBoundingClientRect() : target.getBoundingClientRect()
+    const rect = contentRectOf(imageRef.current) ?? host.getBoundingClientRect()
     if (rect.width <= 0 || rect.height <= 0) return null
-    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return null
+    if (clientX < rect.left || clientX > rect.left + rect.width || clientY < rect.top || clientY > rect.top + rect.height) return null
     return {
       x: clamp((clientX - rect.left) * current.width / rect.width, 0, current.width),
       y: clamp((clientY - rect.top) * current.height / rect.height, 0, current.height),
@@ -410,6 +409,24 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
 
   const pointerButton = (event: React.PointerEvent<HTMLDivElement>): 'left' | 'middle' | 'right' => {
     return event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left'
+  }
+
+  /** The rendered image content box inside an object-fit:contain element. */
+  const contentRectOf = (image: HTMLImageElement | null): { left: number; top: number; width: number; height: number } | null => {
+    if (image === null) return null
+    const rect = image.getBoundingClientRect()
+    const naturalWidth = image.naturalWidth
+    const naturalHeight = image.naturalHeight
+    if (rect.width <= 0 || rect.height <= 0 || naturalWidth <= 0 || naturalHeight <= 0) return null
+    const scale = Math.min(rect.width / naturalWidth, rect.height / naturalHeight)
+    const width = naturalWidth * scale
+    const height = naturalHeight * scale
+    return {
+      left: rect.left + (rect.width - width) / 2,
+      top: rect.top + (rect.height - height) / 2,
+      width,
+      height,
+    }
   }
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
@@ -655,7 +672,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
         </div>
         <button
           type="button"
-          className={cx(css.tool, interact && css.toolActive)}
+          className={cx(css.tool, css.toolLabeled, interact && css.toolActive)}
           title={interact ? t('panel.toolbar.watch') : t('panel.toolbar.interact')}
           aria-label={interact ? t('panel.toolbar.watch') : t('panel.toolbar.interact')}
           aria-pressed={interact}
@@ -663,10 +680,11 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           onClick={() => { setInteract((value) => !value) }}
         >
           {interact ? <CursorIcon /> : <EyeIcon />}
+          <span className={css.toolLabel}>{interact ? t('panel.toolbar.interactShort') : t('panel.toolbar.watchShort')}</span>
         </button>
         <button
           type="button"
-          className={cx(css.tool, picking && css.toolActive)}
+          className={cx(css.tool, css.toolLabeled, picking && css.toolActive)}
           title={t('panel.toolbar.pick')}
           aria-label={t('panel.toolbar.pick')}
           aria-pressed={picking}
@@ -674,6 +692,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           onClick={togglePicking}
         >
           <PickIcon />
+          <span className={css.toolLabel}>{t('panel.toolbar.pickShort')}</span>
         </button>
         <span
           className={css.status}
@@ -684,6 +703,11 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           <StateDot state={dotState} size={10} />
           <span className={css.statusText}>{statusLabel}</span>
           <span className={css.mode}>{modeLabel}</span>
+          {visibleFrame !== null && (
+            <span className={css.frameSize} title={t('panel.toolbar.frameHint')}>
+              {visibleFrame.width}×{visibleFrame.height} · PNG
+            </span>
+          )}
           {state.mode === 'cdp' && state.cdpEndpoint !== undefined && (
             <span className={css.endpoint}>{state.cdpEndpoint}</span>
           )}

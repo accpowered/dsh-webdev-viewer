@@ -97,9 +97,27 @@
   cursor: default;
 }
 
+.toolLabeled {
+  width: auto;
+  padding: 0 7px;
+  gap: 4px;
+}
+
+.toolLabel {
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.frameSize {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .tool:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--dsw-alias-bg-base), 0 0 0 4px var(--dsw-alias-brand-primary);
+  outline: none;  box-shadow: 0 0 0 2px var(--dsw-alias-bg-base), 0 0 0 4px var(--dsw-alias-brand-primary);
 }
 
 /* The address display: read-only, since navigation belongs to the agent's
