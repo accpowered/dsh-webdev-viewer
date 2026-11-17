@@ -5,7 +5,7 @@
  * Mounts three surfaces and nothing else:
  *
  * - the status route and the panel WebSocket under /api/dsh-webdev-viewer,
- * - the ten `webdev_*` agent tools,
+ * - the fifteen `webdev_*` agent tools,
  * - one lazily started Chromium that both share (src/host/service.ts).
  *
  * No system-prompt announcement: the repository requires an `announceToAgent`
@@ -27,6 +27,8 @@ import type {} from '@deepseek-ai/dsh-tools'
 import { BrowserViewService } from './host/service.ts'
 import { makeRoutes } from './host/routes.ts'
 import { createBrowserTools, type DurableImageRef } from './host/tools.ts'
+import { createWorkspaceTools } from './host/workspace-tools.ts'
+import { WebdevWorkspace, type WorkspaceSubprocess } from './host/workspace.ts'
 import { effectiveConfig, type Config as RuntimeConfig } from './host/config.ts'
 
 export { Config } from './host/config.ts'
@@ -43,7 +45,7 @@ declare module '@deepseek-ai/cordis' {
 export const name = 'webdev'
 
 /** Services required before the routes and the tools can mount. */
-export const inject = ['webServer', 'tools']
+export const inject = ['webServer', 'tools', 'subprocess']
 
 /**
  * The attachment service as this package uses it. Typed structurally: the
@@ -154,7 +156,31 @@ export function apply(ctx: Context, config?: RuntimeConfig): void {
   }
 
   const { routes, upgrade } = makeRoutes({ backend: service })
-  const tools = createBrowserTools({ service, saveImage })
+  const workspace = new WebdevWorkspace({
+    getRoot: () => {
+      try {
+        const policy = ctx.get('sandboxPolicy') as { workspaceRoot?: unknown } | undefined
+        return typeof policy?.workspaceRoot === 'string' ? policy.workspaceRoot : undefined
+      } catch {
+        return undefined
+      }
+    },
+    subprocess: (() => {
+      try {
+        const candidate = ctx.get('subprocess') as { spawn?: unknown } | undefined
+        return candidate !== undefined && typeof candidate.spawn === 'function'
+          ? candidate as unknown as WorkspaceSubprocess
+          : undefined
+      } catch {
+        return undefined
+      }
+    })(),
+    navigate: (sessionId, url) => service.navigate(sessionId, url),
+  })
+  const tools = [
+    ...createBrowserTools({ service, saveImage }),
+    ...createWorkspaceTools({ workspace }),
+  ]
 
   ctx.effect(() => {
     const disposers = routes.map(route => ctx.webServer.register(route))
@@ -183,7 +209,11 @@ export function apply(ctx: Context, config?: RuntimeConfig): void {
     return () => { dispose() }
   }, 'webdev: settings')
 
-  // One disposer for the whole browser: it stops the broadcast, the stream, the
-  // protocol socket, and any process this plugin owns, in that order.
-  ctx.effect(() => () => { void service.dispose() }, 'webdev: browser')
+  // One disposer for the whole runtime: stop previews/processes and the
+  // browser in that order. A preview server left open is a listening socket
+  // with a token; a process left running outlives the panel that asked for it.
+  ctx.effect(() => () => {
+    void workspace.dispose()
+    void service.dispose()
+  }, 'webdev: lifetime')
 }

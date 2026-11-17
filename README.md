@@ -2,19 +2,27 @@
 
 A DeepSeek Harness (DSH) plugin for building and verifying web and Electron UIs **inside the right sidebar**, together with an agent.
 
-> Status: **research / prototype scaffold (v0.0.0-dev)**. This repository is not installable yet. The first working preview is planned for the end of Phase 2 in [`docs/wayfinder/MAP.md`](docs/wayfinder/MAP.md).
+> Status: **working prototype (v0.1.0-dev)**. It builds, links into the Desktop profile, and the core flow is live-verified: real-browser attach, snapshot/click/type/console/screenshot, panel input, element pick-to-quote, static preview with live reload, project runner, and a PNG screencast. Not yet released; style inspector, Electron attach, full test coverage, and the GitHub release remain.
 
-## What it aims to do
+## What it does
 
-- Run a real Chromium page in a right-sidebar tab, not a screenshot poll.
-- Let the user and the agent drive the **same page**: click, type, scroll, navigate, inspect.
-- Select elements on the page and insert a structured reference into the DSH composer.
-- Adjust common visual styles on a picked element with a live temporary preview; send the before/after change list to the agent, which edits the source.
-- Preview a workspace folder as a static site and reload it when files change.
-- Run a project dev server (Vite, Next, etc.) or attach to an Electron renderer over CDP.
-- Give the agent full page detail: DOM/ARIA snapshot with refs, console, network, screenshots.
-- Open any HTTP(S) URL, including loopback services.
-- Float or fullscreen the tab, or mirror the page in a headed Chrome/Electron window.
+- Drive a real Chromium page from a right-sidebar tab: click, type, scroll, navigate, inspect.
+- Let the user and the agent drive the **same page**; human clicks and agent actions hit the same CDP target.
+- Select elements with hover/active outlines, then insert a structured reference into the DSH composer. The page-side picker also works from the **real browser window**.
+- Preview a workspace folder over a token-gated loopback server and reload it when files change.
+- Run a detected project dev server or an explicit command, stream logs, detect a localhost URL, and open it.
+- Give the agent full page detail: DOM/ARIA snapshot with refs, console, network, screenshots (PNG or JPEG).
+- Open any HTTP(S), `data:`, or `about:` URL, including loopback services.
+- Mirror the page in a headed Chrome/Edge window over CDP.
+
+## Architecture truth
+
+The sidebar tab is a **live CDP view**: Chromium renders the page, and the tab displays lossless PNG
+frames while forwarding trusted pointer/key events back to it. It is not a native browser surface.
+The installed DSH plugin model renders a React slot and gives plugins no native `BrowserView`/`webview`;
+the UI guidance also says not to serve an HTML page from the Host and embed it in an iframe. The shipped
+`browser-view` tab has the same architecture. For native rendering and full browser chrome, use the
+attached real browser window; the sidebar is the controller/mirror and the element-picking surface.
 
 ## Design direction
 
@@ -43,13 +51,14 @@ scripts/     build and packaging helpers
 ## Development status
 
 - [x] Repository scaffold and decision map
-- [ ] Research round (DSH APIs, prior art, Pencil/pen.dev interactions, CDP input, preview, Electron)
-- [ ] Scope and license decisions (grilling round 1)
-- [ ] Fork spike: human input + element picker
+- [x] Research round (DSH APIs, prior art, Pencil/pen.dev interactions, CDP input, preview, Electron)
+- [x] Scope and license decisions (grilling round 1)
+- [x] Fork spike: human input + element picker
+- [x] Static preview + live reload (basic security tests pass)
+- [x] Project runner (detection, logs, URL detection, stop)
 - [ ] Temporary visual style inspector
-- [ ] Static preview + live reload
-- [ ] Project runner + Electron attach
-- [ ] Tests, docs, release
+- [ ] Electron attach
+- [ ] Full test suite, docs/release, GitHub publication
 
 ## Development
 

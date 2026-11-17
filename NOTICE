@@ -24,7 +24,10 @@ This product is planned to include software derived from:
   The element-marking CSS, selector builder, and payload shape in
   src/core/page-picker.ts are adapted from this package. The transport differs:
   it injects into a real page and returns picks through a CDP binding so they
-  also work from the real browser window.
+  also work from the real browser window. The project-detection shape and
+  log/URL-extraction pattern in src/host/workspace.ts are adapted from its host
+  half; the preview server, token model, process ownership, and shell execution
+  are this project's.
 
 Modifications by this project are described in UPSTREAM.md. The upstream
 README, AGENTS.md, package.json, and cordis.patch.yml are retained verbatim

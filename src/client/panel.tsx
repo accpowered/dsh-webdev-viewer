@@ -305,7 +305,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   // One narrowed value for the stage: a frame is only paintable when the host
   // reported no error, which keeps the null check off the JSX branch.
   const visibleFrame = effectiveError === null ? frame : null
-  const dataUrl = visibleFrame === null ? null : `data:image/jpeg;base64,${visibleFrame.data}`
+  const dataUrl = visibleFrame === null ? null : `data:image/png;base64,${visibleFrame.data}`
   // The marker names what the viewer is actually looking at: the socket's phase
   // first (nothing is live before the host answers), then the page's own load
   // state. The same three strings the trace footer used to carry.

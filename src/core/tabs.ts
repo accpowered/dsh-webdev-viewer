@@ -541,7 +541,8 @@ export class TabManager {
   }
 
   /**
-   * Start the JPEG screencast for one tab.
+   * Start the PNG screencast for one tab. PNG is lossless: a docked panel that
+   * renders a code page at 1:1 should not show JPEG ringing around every glyph.
    * @param tabId - target tab.
    */
   async startScreencast(tabId: string): Promise<void> {
@@ -549,8 +550,7 @@ export class TabManager {
     if (record.screencastRunning) return
     record.screencastRunning = true
     await this.transport.send('Page.startScreencast', {
-      format: 'jpeg',
-      quality: this.jpegQuality,
+      format: 'png',
       maxWidth: this.viewport.width,
       maxHeight: this.viewport.height,
       everyNthFrame: 1,
@@ -577,14 +577,13 @@ export class TabManager {
    * `planScreenshot` and passes those parameters, so this method stays the
    * single send point without deciding any of it.
    * @param tabId - target tab.
-   * @param params - CDP parameters from `planScreenshot`; omitted keeps the plain JPEG capture.
+   * @param params - CDP parameters from `planScreenshot`; omitted keeps the plain PNG capture.
    * @returns base64 payload without the `data:` prefix.
    */
   async captureScreenshot(tabId: string, params?: CdpScreenshotParams): Promise<string> {
     const record = this.requireRecord(tabId)
     const request: CdpScreenshotParams = params ?? {
-      format: 'jpeg',
-      quality: this.jpegQuality,
+      format: 'png',
       captureBeyondViewport: false,
     }
     const result = await this.transport.send<{ data?: unknown }>(
