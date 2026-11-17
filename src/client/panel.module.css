@@ -508,6 +508,107 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
+.noteInput {
+  flex: 1 1 160px;
+  min-width: 120px;
+  height: 24px;
+  padding: 0 7px;
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-xxxs-11);
+  background: var(--dsw-alias-bg-base);
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  outline: none;
+}
+
+.noteInput:focus {
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.stylePanel {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  background: var(--dsw-alias-bg-layer-1);
+  border-bottom: 0.5px solid var(--dsw-alias-border-l3);
+}
+
+.stylePanelHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.styleTitle {
+  flex: none;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.styleSelector {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.styleGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 8px;
+  margin-top: 6px;
+}
+
+.styleField {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+}
+
+.styleField input {
+  width: 100%;
+  height: 24px;
+  padding: 0 6px;
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-xxxs-11);
+  background: var(--dsw-alias-bg-base);
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  outline: none;
+  box-sizing: border-box;
+}
+
+.styleField input:focus {
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.styleFooter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.styleNote {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+.styleError {
+  margin-top: 4px;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 11px;
+}
+
 .pickActions {
   display: flex;
   flex: none;

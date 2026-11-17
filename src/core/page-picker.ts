@@ -106,6 +106,58 @@ function installPagePicker(): void {
     active = null
   }
 
+  // Persistent numbered boxes live in a closed shadow root under <html>, not
+  // <body>, so the agent's DOM snapshot never sees our own overlays. The host is
+  // pointer-events:none; only pixels are added.
+  let markerHost: HTMLElement | null = null
+  let markerRoot: HTMLElement | null = null
+  const markers: Array<{ element: Element; box: HTMLElement }> = []
+
+  const positionMarkers = (): void => {
+    for (const marker of markers) {
+      const rect = marker.element.getBoundingClientRect()
+      marker.box.style.left = `${Math.round(rect.left)}px`
+      marker.box.style.top = `${Math.round(rect.top)}px`
+      marker.box.style.width = `${Math.round(rect.width)}px`
+      marker.box.style.height = `${Math.round(rect.height)}px`
+    }
+  }
+
+  const ensureMarkers = (): HTMLElement => {
+    if (markerRoot !== null) return markerRoot
+    const host = document.createElement('div')
+    host.setAttribute('data-dsh-webdev-markers', '')
+    host.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647'
+    const shadow = host.attachShadow({ mode: 'closed' })
+    const root = document.createElement('div')
+    root.style.cssText = 'position:absolute;inset:0'
+    shadow.append(root)
+    document.documentElement.append(host)
+    markerHost = host
+    markerRoot = root
+    return root
+  }
+
+  const addMarker = (element: Element): void => {
+    const root = ensureMarkers()
+    const box = document.createElement('div')
+    box.style.cssText = 'position:absolute;box-sizing:border-box;border:2px solid #4f8cff;border-radius:2px;background:rgba(79,140,255,.10)'
+    const label = document.createElement('span')
+    label.textContent = String(markers.length + 1)
+    label.style.cssText = 'position:absolute;left:-1px;top:-18px;min-width:16px;height:16px;padding:0 4px;background:#4f8cff;color:#fff;font:11px/16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;border-radius:8px;text-align:center;box-sizing:border-box'
+    box.append(label)
+    root.append(box)
+    markers.push({ element, box })
+    positionMarkers()
+  }
+
+  const clearMarkers = (): void => {
+    markers.length = 0
+    markerHost?.remove()
+    markerHost = null
+    markerRoot = null
+  }
+
   const onOver = (event: Event): void => {
     if (!enabled) return
     const target = event.target
@@ -134,6 +186,7 @@ function installPagePicker(): void {
     clearActive()
     active = element
     element.classList.add('dsh-wvp-active')
+    addMarker(element)
     const rect = element.getBoundingClientRect()
     const clone = stripInternal(element.cloneNode(true) as Element)
     const payload = {
@@ -157,6 +210,7 @@ function installPagePicker(): void {
       enabled = false
       clearHover()
       clearActive()
+      clearMarkers()
       document.documentElement.classList.remove('dsh-wvp-picking')
     }
   }
@@ -165,6 +219,8 @@ function installPagePicker(): void {
   document.addEventListener('mouseout', onOut, true)
   document.addEventListener('click', onClick, true)
   document.addEventListener('keydown', onKey, true)
+  document.addEventListener('scroll', positionMarkers, true)
+  window.addEventListener('resize', positionMarkers)
 
   w.__dshWebdevPicker = {
     setEnabled(value: boolean): void {
@@ -173,6 +229,7 @@ function installPagePicker(): void {
       if (!value) {
         clearHover()
         clearActive()
+        clearMarkers()
       }
     },
   }

@@ -294,6 +294,49 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
         const limit = typeof input.limit === 'number' ? input.limit : 100
         return consoleRef.current.slice(-limit)
       }
+      case 'style-get': {
+        const selector = typeof input.selector === 'string' ? input.selector : ''
+        const properties = Array.isArray(input.properties) ? input.properties.filter((item): item is string => typeof item === 'string') : []
+        const value = await element.executeJavaScript(`(() => {
+          const el = document.querySelector(${JSON.stringify(selector)});
+          if (el === null) return null;
+          const computed = getComputedStyle(el);
+          const result = {};
+          for (const property of ${JSON.stringify(properties)}) {
+            result[property] = el.style.getPropertyValue(property) || computed.getPropertyValue(property);
+          }
+          return result;
+        })()`) as Record<string, unknown> | null
+        if (value === null) throw new Error('the picked element no longer exists in the page')
+        const result: Record<string, string> = {}
+        for (const [key, item] of Object.entries(value)) if (typeof item === 'string') result[key] = item
+        return result
+      }
+      case 'style-set': {
+        const selector = typeof input.selector === 'string' ? input.selector : ''
+        const property = typeof input.property === 'string' ? input.property : ''
+        const value = typeof input.value === 'string' ? input.value : ''
+        if (selector === '' || property === '') throw new Error('style-set needs selector and property')
+        await element.executeJavaScript(`(() => {
+          const el = document.querySelector(${JSON.stringify(selector)});
+          if (el === null) throw new Error('element is missing');
+          el.style.setProperty(${JSON.stringify(property)}, ${JSON.stringify(value)});
+          return true;
+        })()`)
+        return { ok: true }
+      }
+      case 'style-reset': {
+        const selector = typeof input.selector === 'string' ? input.selector : ''
+        const property = typeof input.property === 'string' ? input.property : ''
+        if (selector === '' || property === '') throw new Error('style-reset needs selector and property')
+        await element.executeJavaScript(`(() => {
+          const el = document.querySelector(${JSON.stringify(selector)});
+          if (el === null) throw new Error('element is missing');
+          el.style.removeProperty(${JSON.stringify(property)});
+          return true;
+        })()`)
+        return { ok: true }
+      }
       default:
         throw new Error(`unknown operation: ${op}`)
     }

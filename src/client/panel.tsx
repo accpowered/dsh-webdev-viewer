@@ -126,11 +126,22 @@ function formatPicks(picks: ReadonlyArray<BrowserPickedElement>, url: string): s
     if (pick.box !== undefined) lines.push(`- box: ${pick.box.x},${pick.box.y} ${pick.box.width}x${pick.box.height}`)
     if (pick.source?.file !== undefined) lines.push(`- source: ${pick.source.file}${pick.source.line === undefined ? '' : `:${pick.source.line}`}`)
     if (pick.source?.component !== undefined) lines.push(`- component: ${pick.source.component}`)
+    if (pick.note !== undefined && pick.note.trim().length > 0) lines.push(`- note: ${pick.note.trim()}`)
     if (pick.text !== undefined) lines.push(`- text: ${pick.text}`)
   })
   lines.push('', 'Use webdev_snapshot to confirm the current DOM before acting; a pick can be stale.')
   return lines.join('\n')
 }
+
+/** Common temporary style properties exposed by the native page inspector. */
+const STYLE_FIELDS = [
+  { key: 'color', label: 'panel.style.color' },
+  { key: 'background-color', label: 'panel.style.background' },
+  { key: 'font-size', label: 'panel.style.fontSize' },
+  { key: 'padding', label: 'panel.style.padding' },
+  { key: 'margin', label: 'panel.style.margin' },
+  { key: 'border-radius', label: 'panel.style.radius' },
+] as const
 
 /** Cursor mark for the interact toggle. */
 function CursorIcon() {
@@ -196,6 +207,9 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   const [nativeLoading, setNativeLoading] = useState(false)
   const [nativeAddress, setNativeAddress] = useState('')
   const [nativeError, setNativeError] = useState<string | null>(null)
+  const [styleOpen, setStyleOpen] = useState(false)
+  const [styleValues, setStyleValues] = useState<Record<string, string>>({})
+  const [styleError, setStyleError] = useState<string | null>(null)
   const nativeRef = useRef<NativeBrowserHandle | null>(null)
   const socketRef = useRef<BrowserViewSocket | null>(null)
   const frameHostRef = useRef<HTMLDivElement | null>(null)
@@ -265,6 +279,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           const element = result.element
           if (element !== undefined) {
             setPicks((current) => [...current, element])
+            setStyleOpen(false)
             setPickError(null)
             setPickNotice(null)
           } else if (result.error !== undefined) {
@@ -282,6 +297,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           const element = result.element
           if (element !== undefined) {
             setPicks((current) => [...current, element])
+            setStyleOpen(false)
             setPickError(null)
             setPickNotice(null)
           }
@@ -645,11 +661,94 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
 
   const clearPicks = (): void => {
     setPicks([])
+    setPicking(false)
+    setPagePickerActive(false)
     setHoverPick(null)
     setPickError(null)
     setPickNotice(null)
+    setStyleOpen(false)
     pickRequestRef.current = null
     hoverRequestRef.current = null
+    if (!nativeActive) socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'pick-mode', enabled: false })
+  }
+
+  const updateLastNote = (note: string): void => {
+    setPicks((current) => {
+      if (current.length === 0) return current
+      const next = current.slice()
+      const last = next[next.length - 1]
+      next[next.length - 1] = { ...last, note }
+      return next
+    })
+  }
+
+  const lastPick = picks[picks.length - 1]
+
+  const openStyle = async (): Promise<void> => {
+    if (!nativeActive || lastPick === undefined) return
+    setStyleOpen(true)
+    setStyleError(null)
+    try {
+      const values = await nativeRef.current?.request('style-get', {
+        selector: lastPick.selector,
+        properties: STYLE_FIELDS.map((field) => field.key),
+      })
+      if (typeof values === 'object' && values !== null) {
+        const next: Record<string, string> = {}
+        for (const field of STYLE_FIELDS) {
+          const value = (values as Record<string, unknown>)[field.key]
+          if (typeof value === 'string') next[field.key] = value
+        }
+        setStyleValues(next)
+      }
+    } catch (error) {
+      setStyleError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const setStyle = (property: string, value: string): void => {
+    if (!nativeActive || lastPick === undefined) return
+    setStyleValues((current) => ({ ...current, [property]: value }))
+    setStyleError(null)
+    void nativeRef.current?.request('style-set', {
+      selector: lastPick.selector,
+      property,
+      value,
+    }).catch((error: unknown) => {
+      setStyleError(error instanceof Error ? error.message : String(error))
+    })
+  }
+
+  const resetStyle = (property: string): void => {
+    if (!nativeActive || lastPick === undefined) return
+    setStyleValues((current) => ({ ...current, [property]: '' }))
+    setStyleError(null)
+    void nativeRef.current?.request('style-reset', {
+      selector: lastPick.selector,
+      property,
+    }).catch((error: unknown) => {
+      setStyleError(error instanceof Error ? error.message : String(error))
+    })
+  }
+
+  const sendStyle = (): void => {
+    if (lastPick === undefined) return
+    const lines = [
+      '## WebDev style change',
+      `Page: ${displayUrl}`,
+      `Element: \`${lastPick.selector}\``,
+      '',
+      ...STYLE_FIELDS.map((field) => `- ${field.key}: ${styleValues[field.key] ?? ''}`),
+      '',
+      'Temporary preview only; update the source to persist it.',
+    ]
+    const accepted = inputActions?.insertQuote(lines.join('\n'))
+    if (accepted === false) {
+      setStyleError(t('panel.pick.insertFailed'))
+      return
+    }
+    setStyleOpen(false)
+    setPickNotice(t('panel.style.sent'))
   }
 
   const togglePicking = (): void => {
@@ -674,6 +773,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     setPagePickerActive(false)
     setPickError(null)
     setPickNotice(null)
+    setStyleOpen(false)
     setNativeError(null)
     if (next) setNativeAddress(nativeUrl || url)
   }
@@ -690,6 +790,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
       setPicking(false)
       setPagePickerActive(false)
       setHoverPick(null)
+      setStyleOpen(false)
       setPickError(null)
       setPickNotice(t('panel.pick.sent'))
       return
@@ -875,6 +976,16 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
       {(picking || picks.length > 0 || pickError !== null || pickNotice !== null) && (
         <div className={css.pickBar} data-dsh-part={BROWSER_VIEW_PARTS.pickBar}>
           <span className={css.pickHint}>{picking ? t('panel.pick.hint') : pickCount}</span>
+          {picks.length > 0 && (
+            <input
+              className={css.noteInput}
+              type="text"
+              value={picks[picks.length - 1]?.note ?? ''}
+              placeholder={t('panel.pick.note')}
+              aria-label={t('panel.pick.note')}
+              onChange={(event) => { updateLastNote(event.currentTarget.value) }}
+            />
+          )}
           <span className={css.pickActions}>
             {picks.length > 0 && (
               <button type="button" className={css.pickButton} onClick={sendPicks}>
@@ -886,9 +997,47 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
                 {t('panel.pick.clear')}
               </button>
             )}
+            {picks.length > 0 && nativeActive && (
+              <button type="button" className={css.pickButton} onClick={() => { void openStyle() }}>
+                {t('panel.style.open')}
+              </button>
+            )}
           </span>
           {pickError !== null && <span className={css.pickError} role="alert">{pickError}</span>}
           {pickNotice !== null && <span className={css.pickNotice} role="status">{pickNotice}</span>}
+        </div>
+      )}
+      {styleOpen && nativeActive && lastPick !== undefined && (
+        <div className={css.stylePanel} data-dsh-part="style">
+          <div className={css.stylePanelHeader}>
+            <span className={css.styleTitle}>{t('panel.style.title')}</span>
+            <code className={css.styleSelector} title={lastPick.selector}>{lastPick.selector}</code>
+            <button type="button" className={css.pickButton} onClick={() => { setStyleOpen(false) }}>
+              {t('panel.style.close')}
+            </button>
+          </div>
+          <div className={css.styleGrid}>
+            {STYLE_FIELDS.map((field) => (
+              <label key={field.key} className={css.styleField}>
+                <span>{t(field.label)}</span>
+                <input
+                  value={styleValues[field.key] ?? ''}
+                  spellCheck={false}
+                  onChange={(event) => { setStyle(field.key, event.currentTarget.value) }}
+                />
+              </label>
+            ))}
+          </div>
+          <div className={css.styleFooter}>
+            <button type="button" className={css.pickButton} onClick={sendStyle}>
+              {t('panel.style.send')}
+            </button>
+            <button type="button" className={css.pickButton} onClick={() => { for (const field of STYLE_FIELDS) resetStyle(field.key) }}>
+              {t('panel.style.reset')}
+            </button>
+            <span className={css.styleNote}>{t('panel.style.note')}</span>
+          </div>
+          {styleError !== null && <div className={css.styleError} role="alert">{styleError}</div>}
         </div>
       )}
       {state.tabs.length > 1 && !nativeActive && (
@@ -923,6 +1072,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
               onLoading={(next) => { setNativeLoading(next) }}
               onPick={(element) => {
                 setPicks((current) => [...current, element])
+                setStyleOpen(false)
                 setPickError(null)
                 setPickNotice(null)
               }}
