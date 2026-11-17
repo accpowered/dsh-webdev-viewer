@@ -64,6 +64,8 @@ export interface BrowserViewSocketHandlers {
   onPickResult?(result: { requestId: string; element?: BrowserPickedElement; error?: string }): void
   /** The page-side picker was enabled or disabled. */
   onPickMode?(enabled: boolean): void
+  /** The host asks the native guest to execute one operation. */
+  onNativeRequest?(request: { requestId: string; op: string; args?: unknown }): void
   /** The host reported a failure the panel must show instead of a frame. */
   onError(code: string, message: string): void
 }
@@ -271,6 +273,16 @@ export function parseBrowserViewEvent(value: unknown): BrowserViewEvent | null {
       if (typeof candidate.enabled !== 'boolean') return null
       return { v: BROWSER_VIEW_API_VERSION, kind: 'pick-mode', enabled: candidate.enabled }
     }
+    case 'native-request': {
+      if (typeof candidate.requestId !== 'string' || typeof candidate.op !== 'string') return null
+      return {
+        v: BROWSER_VIEW_API_VERSION,
+        kind: 'native-request',
+        requestId: candidate.requestId,
+        op: candidate.op,
+        ...candidate.args === undefined ? {} : { args: candidate.args },
+      }
+    }
     case 'error': {
       if (typeof candidate.code !== 'string' || typeof candidate.message !== 'string') return null
       return { v: BROWSER_VIEW_API_VERSION, kind: 'error', code: candidate.code, message: candidate.message }
@@ -362,6 +374,9 @@ export function connectBrowserViewSocket(
         return
       case 'pick-mode':
         handlers.onPickMode?.(event.enabled)
+        return
+      case 'native-request':
+        handlers.onNativeRequest?.(event)
         return
       case 'error':
         handlers.onError(event.code, event.message)

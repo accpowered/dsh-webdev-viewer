@@ -24,15 +24,15 @@ Electron's `<webview>` tag; the shipped sidebar browser uses the same pair. Our 
 a **real guest renderer in the sidebar**, so text, scrolling and input are native, not frames.
 
 The CDP screencast remains the fallback for the web client (no Desktop bridge) and is still the
-transport the agent tools use. The next step is a native-webview tool bridge so snapshot/click/type/
-screenshot can target the guest the user is actually looking at; until then the agent's CDP attachment
-is a separate, explicitly labelled surface.
+transport for the `webdev_*` tools. The desktop guest has its own
+`webdev_desktop_snapshot/click/type/press/scroll/screenshot/navigate` family, routed through the panel
+socket; it must be hard-refreshed into the client before the first attach.
 
 ## Known limitations
 
-- **Native agent bridge pending (P5).** The native Desktop guest is interactive for the user and its
-  picker works, but `webdev_snapshot/click/type/...` still target the CDP attachment. Use the Native/CDP
-  switch to compare; P5 is the next correctness task.
+- **Desktop tool bridge (new).** The `webdev_desktop_*` family targets the native guest through the
+  panel socket; use it when the desktop surface is showing. It needs the panel hard-refreshed/reopened
+  once so the attach command is registered. CDP tools still target the separate attachment.
 - **Style inspector not in 0.1.** The panel picks elements and quotes them; temporary CSS editing is
   still planned (P4).
 - **Electron is renderer attach only.** A debug port must exist at launch; native menus/dialogs/window

@@ -161,6 +161,16 @@ function PickIcon() {
   )
 }
 
+/** Monitor mark for the desktop/CDP view switch. */
+function MonitorIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <rect x="1.5" y="2.5" width="13" height="9" rx="1.4" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M6 13.5h4M8 11.5v2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 /**
  * Render the browser view tab body.
  * @param props - composed slot props.
@@ -290,6 +300,31 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
         setPagePickerActive(enabled)
         if (!enabled) setHoverPick(null)
       },
+      onNativeRequest: (request) => {
+        const native = nativeRef.current
+        if (native === null) {
+          socketRef.current?.send({
+            v: BROWSER_VIEW_API_VERSION,
+            kind: 'native-result',
+            requestId: request.requestId,
+            error: 'the desktop view is not mounted',
+          })
+          return
+        }
+        void native.request(request.op, request.args).then(
+          (result) => {
+            socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'native-result', requestId: request.requestId, result })
+          },
+          (error: unknown) => {
+            socketRef.current?.send({
+              v: BROWSER_VIEW_API_VERSION,
+              kind: 'native-result',
+              requestId: request.requestId,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          },
+        )
+      },
       onError: (code, message) => { setError({ code, message }) },
     })
     socketRef.current = instance
@@ -325,7 +360,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   // first (nothing is live before the host answers), then the page's own load
   // state. The same three strings the trace footer used to carry.
   const statusLabel = nativeActive
-    ? nativeLoading ? t('panel.native.loading') : t('panel.native.ready')
+    ? nativeLoading ? t('panel.status.loading') : t('panel.status.live')
     : status !== 'open'
       ? t('panel.status.connecting')
       : loading ? t('panel.status.loading') : t('panel.status.live')
@@ -334,7 +369,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   const dotState: StateDotState = nativeActive
     ? nativeLoading ? 'ongoing' : 'done'
     : status !== 'open' ? 'idle' : loading ? 'ongoing' : 'done'
-  const modeLabel = nativeActive ? t('panel.mode.native') : state.mode === 'cdp' ? t('panel.mode.real') : t('panel.mode.isolated')
+  const modeLabel = nativeActive ? '' : state.mode === 'cdp' ? t('panel.mode.real') : t('panel.mode.isolated')
 
   frameDataRef.current = visibleFrame
   const frameVisible = dataUrl !== null
@@ -695,6 +730,14 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     return () => { liveTitle?.set(sessionId, undefined) }
   }, [liveTitle, sessionId, displayTitle])
 
+  // Tell the host which panel owns the desktop guest so desktop_* tools can
+  // route requests to this exact webview. The socket buffers before it opens.
+  useEffect(() => {
+    if (!nativeActive) return
+    socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'native-attach', sessionId })
+    return () => { socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'native-detach' }) }
+  }, [nativeActive, sessionId])
+
   return (
     <div className={css.root} data-dsh-plugin={BROWSER_VIEW_PLUGIN} data-dsh-part={BROWSER_VIEW_PARTS.panel}>
       <div className={css.toolbar} data-dsh-part={BROWSER_VIEW_PARTS.toolbar}>
@@ -739,13 +782,13 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
         {nativeAvailable && (
           <button
             type="button"
-            className={cx(css.tool, css.toolLabeled, nativeActive && css.toolActive)}
+            className={cx(css.tool, nativeActive && css.toolActive)}
             title={nativeActive ? t('panel.native.switchToCdp') : t('panel.native.switchToNative')}
             aria-label={nativeActive ? t('panel.native.switchToCdp') : t('panel.native.switchToNative')}
             aria-pressed={nativeActive}
             onClick={toggleNativeMode}
           >
-            <span className={css.toolLabel}>{nativeActive ? t('panel.native.label') : t('panel.native.cdp')}</span>
+            <MonitorIcon />
           </button>
         )}
         {nativeActive && (
@@ -804,7 +847,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
         >
           <StateDot state={dotState} size={10} />
           <span className={css.statusText}>{statusLabel}</span>
-          <span className={css.mode}>{modeLabel}</span>
+          {modeLabel.length > 0 && <span className={css.mode}>{modeLabel}</span>}
           {!nativeActive && visibleFrame !== null && (
             <span className={css.frameSize} title={t('panel.toolbar.frameHint')}>
               {visibleFrame.width}×{visibleFrame.height} · PNG

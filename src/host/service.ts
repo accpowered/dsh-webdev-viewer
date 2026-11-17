@@ -43,6 +43,7 @@ import {
 import {
   DEFAULT_JPEG_QUALITY,
   DEFAULT_VIEWPORT,
+  SNAPSHOT_NODE_LIMIT,
   type BrowserActionTrace,
   type BrowserConsoleEntry,
   type BrowserNetworkEntry,
@@ -279,6 +280,18 @@ export class BrowserViewService implements BrowserViewBackend {
    * navigating again; it is reset when the navigation ends.
    */
   private readonly authTopUpSpent = new Set<string>()
+  /** Panel socket currently owning the Desktop native guest. */
+  private nativeSink: BrowserViewSink | undefined
+  /** Session that attached the native guest, when known. */
+  private nativeSessionId: string | undefined
+  /** One in-flight Host -> native-guest request per panel. */
+  private readonly nativePending = new Map<string, {
+    resolve: (value: unknown) => void
+    reject: (error: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  }>()
+  /** Last native snapshot's ref -> selector map. */
+  private readonly nativeRefs = new Map<number, string>()
   private session: BrowserSession | undefined
   /**
    * The tab the attached panels watch. Kept beside the tab manager instead of
@@ -453,6 +466,28 @@ export class BrowserViewService implements BrowserViewBackend {
           sink.send({ v: 1, kind: 'pick-mode', enabled: command.enabled })
           return
         }
+        case 'native-attach': {
+          if (this.nativeSink !== sink) this.rejectNativeRequests('another panel took the native guest')
+          this.nativeSink = sink
+          this.nativeSessionId = command.sessionId
+          return
+        }
+        case 'native-detach': {
+          if (this.nativeSink !== sink) return
+          this.nativeSink = undefined
+          this.nativeSessionId = undefined
+          this.rejectNativeRequests('the native view was detached')
+          return
+        }
+        case 'native-result': {
+          const pending = this.nativePending.get(command.requestId)
+          if (pending === undefined) return
+          this.nativePending.delete(command.requestId)
+          clearTimeout(pending.timer)
+          if (command.error !== undefined) pending.reject(new Error(command.error))
+          else pending.resolve(command.result)
+          return
+        }
         default: {
           const unreachable: never = command
           void unreachable
@@ -525,6 +560,191 @@ export class BrowserViewService implements BrowserViewBackend {
       requestId: `page-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       element,
     })
+  }
+
+  /**
+   * Whether a panel is currently attached as the native Desktop guest.
+   */
+  nativeActive(): boolean {
+    return this.nativeSink !== undefined
+  }
+
+  /**
+   * Ask the attached native guest to run one operation and correlate the reply.
+   * @param op - native operation.
+   * @param args - operation arguments.
+   * @param timeoutMs - deadline before the tool reports a broken bridge.
+   */
+  private async nativeRequest(op: string, args: unknown, timeoutMs = 30_000): Promise<unknown> {
+    const sink = this.nativeSink
+    if (sink === undefined) {
+      throw new Error('the desktop view is not attached; open WebDev Viewer and use the desktop surface')
+    }
+    const requestId = `native-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    return await new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.nativePending.delete(requestId)
+        reject(new Error(`the native view did not answer ${op} within ${Math.round(timeoutMs / 1000)}s`))
+      }, timeoutMs)
+      this.nativePending.set(requestId, { resolve, reject, timer })
+      try {
+        sink.send({ v: 1, kind: 'native-request', requestId, op, ...args === undefined ? {} : { args } })
+      } catch (error) {
+        this.nativePending.delete(requestId)
+        clearTimeout(timer)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
+    })
+  }
+
+  /** Reject every in-flight native request and forget the sink. */
+  private rejectNativeRequests(message: string): void {
+    for (const [requestId, pending] of this.nativePending) {
+      clearTimeout(pending.timer)
+      pending.reject(new Error(message))
+      this.nativePending.delete(requestId)
+    }
+    this.nativeSink = undefined
+    this.nativeSessionId = undefined
+  }
+
+  /**
+   * Snapshot the native guest and rebuild the ref map used by native clicks.
+   * @param limit - maximum nodes.
+   */
+  async nativeSnapshot(limit = SNAPSHOT_NODE_LIMIT): Promise<BrowserSnapshot> {
+    const raw = await this.nativeRequest('snapshot', { limit })
+    if (typeof raw !== 'object' || raw === null) throw new Error('the native page did not return a snapshot')
+    const payload = raw as Record<string, unknown>
+    const source = Array.isArray(payload.nodes) ? payload.nodes : []
+    const nodes: BrowserSnapshot['nodes'] = []
+    this.nativeRefs.clear()
+    for (const value of source) {
+      if (typeof value !== 'object' || value === null) continue
+      const node = value as Record<string, unknown>
+      if (typeof node.tag !== 'string' || typeof node.selector !== 'string') continue
+      const ref = nodes.length
+      const box = typeof node.box === 'object' && node.box !== null ? node.box as Record<string, unknown> : undefined
+      const built: BrowserSnapshot['nodes'][number] = {
+        ref,
+        tag: node.tag,
+        depth: typeof node.depth === 'number' ? node.depth : 0,
+        ...typeof node.id === 'string' ? { id: node.id } : {},
+        ...Array.isArray(node.classes) ? { classes: node.classes.filter((item): item is string => typeof item === 'string') } : {},
+        ...typeof node.role === 'string' ? { role: node.role } : {},
+        ...typeof node.name === 'string' ? { name: node.name } : {},
+        ...typeof node.text === 'string' ? { text: node.text } : {},
+        ...box !== undefined && typeof box.x === 'number' && typeof box.y === 'number'
+          && typeof box.width === 'number' && typeof box.height === 'number'
+          ? { box: { x: box.x, y: box.y, width: box.width, height: box.height } }
+          : {},
+      }
+      nodes.push(built)
+      this.nativeRefs.set(ref, node.selector)
+    }
+    return {
+      tabId: 'desktop',
+      url: typeof payload.url === 'string' ? payload.url : '',
+      title: typeof payload.title === 'string' ? payload.title : '',
+      nodes,
+      truncated: payload.truncated === true,
+    }
+  }
+
+  /** Navigate the native guest and report its settled URL/title. */
+  async nativeNavigate(url: string): Promise<{ url: string; title: string }> {
+    const raw = await this.nativeRequest('navigate', { url })
+    if (typeof raw !== 'object' || raw === null) return { url, title: '' }
+    const payload = raw as Record<string, unknown>
+    return {
+      url: typeof payload.url === 'string' ? payload.url : url,
+      title: typeof payload.title === 'string' ? payload.title : '',
+    }
+  }
+
+  /** Resolve a ref/selector/point for a native click. */
+  private nativeSelectorOf(target: { ref?: number; selector?: string }): string | undefined {
+    if (target.selector !== undefined && target.selector !== '') return target.selector
+    if (target.ref === undefined) return undefined
+    const selector = this.nativeRefs.get(target.ref)
+    if (selector === undefined) throw new Error(`native ref ${target.ref} is unknown; call webdev_native_snapshot again`)
+    return selector
+  }
+
+  /** Click in the native guest. */
+  async nativeClick(target: { ref?: number; selector?: string; x?: number; y?: number }): Promise<string> {
+    const selector = this.nativeSelectorOf(target)
+    if (selector === undefined && (target.x === undefined || target.y === undefined)) {
+      throw new Error('native click needs a ref from webdev_native_snapshot, a selector, or x/y')
+    }
+    const raw = await this.nativeRequest('click', {
+      ...selector === undefined ? {} : { selector },
+      ...target.x === undefined ? {} : { x: target.x },
+      ...target.y === undefined ? {} : { y: target.y },
+    })
+    const payload = typeof raw === 'object' && raw !== null ? raw as Record<string, unknown> : {}
+    const tag = typeof payload.tag === 'string' ? payload.tag : 'element'
+    const name = typeof payload.name === 'string' && payload.name.length > 0 ? ` "${payload.name}"` : ''
+    return `clicked ${tag}${name} in the native view`
+  }
+
+  /** Insert text into the native guest's focused field. */
+  async nativeType(target: { ref?: number; selector?: string; x?: number; y?: number }, text: string): Promise<string> {
+    const selector = this.nativeSelectorOf(target)
+    await this.nativeRequest('type', {
+      ...selector === undefined ? {} : { selector },
+      ...target.x === undefined ? {} : { x: target.x },
+      ...target.y === undefined ? {} : { y: target.y },
+      text,
+    })
+    return `typed ${text.length} character(s) in the native view`
+  }
+
+  /** Press one key in the native guest. */
+  async nativePress(key: string): Promise<string> {
+    await this.nativeRequest('press', { key })
+    return `pressed ${key} in the native view`
+  }
+
+  /** Scroll the native guest. */
+  async nativeScroll(x: number, y: number, deltaX: number, deltaY: number): Promise<string> {
+    await this.nativeRequest('scroll', { x, y, deltaX, deltaY })
+    return `scrolled the native view`
+  }
+
+  /** Capture the native guest as a PNG or JPEG data payload. */
+  async nativeScreenshot(format: 'png' | 'jpeg' = 'png'): Promise<{
+    data: string
+    mediaType: 'image/png' | 'image/jpeg'
+    width: number
+    height: number
+    url: string
+    title: string
+  }> {
+    const raw = await this.nativeRequest('screenshot', { format }, 45_000)
+    if (typeof raw !== 'object' || raw === null) throw new Error('the desktop page did not return a screenshot')
+    const payload = raw as Record<string, unknown>
+    if (typeof payload.data !== 'string' || payload.data.length === 0) throw new Error('the screenshot was empty')
+    return {
+      data: payload.data,
+      mediaType: format === 'jpeg' ? 'image/jpeg' : 'image/png',
+      width: typeof payload.width === 'number' ? payload.width : 0,
+      height: typeof payload.height === 'number' ? payload.height : 0,
+      url: typeof payload.url === 'string' ? payload.url : '',
+      title: typeof payload.title === 'string' ? payload.title : '',
+    }
+  }
+
+  /** Recent console entries from the native guest. */
+  async nativeConsole(limit = 100): Promise<BrowserConsoleEntry[]> {
+    const raw = await this.nativeRequest('console', { limit })
+    if (!Array.isArray(raw)) return []
+    return raw.filter((entry): entry is BrowserConsoleEntry => {
+      return typeof entry === 'object' && entry !== null
+        && typeof (entry as Record<string, unknown>).level === 'string'
+        && typeof (entry as Record<string, unknown>).text === 'string'
+        && typeof (entry as Record<string, unknown>).at === 'number'
+    }).slice(-limit)
   }
 
   /**

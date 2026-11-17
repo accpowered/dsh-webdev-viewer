@@ -1,9 +1,9 @@
 ---
 id: P5
 type: feature
-status: open
+status: in_progress
 blocked_by: []
-owner: null
+owner: lead
 write_scope: src/client/, src/host/, src/core/protocol.ts, tests/
 ---
 

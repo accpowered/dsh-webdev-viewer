@@ -5,7 +5,7 @@
  * Mounts three surfaces and nothing else:
  *
  * - the status route and the panel WebSocket under /api/dsh-webdev-viewer,
- * - the seventeen `webdev_*` agent tools,
+ * - the twenty-four `webdev_*` agent tools,
  * - one lazily started Chromium that both share (src/host/service.ts).
  *
  * No system-prompt announcement: the repository requires an `announceToAgent`
@@ -28,6 +28,7 @@ import { BrowserViewService } from './host/service.ts'
 import { makeRoutes } from './host/routes.ts'
 import { createBrowserTools, type DurableImageRef } from './host/tools.ts'
 import { createWorkspaceTools } from './host/workspace-tools.ts'
+import { createDesktopTools } from './host/native-tools.ts'
 import { WebdevWorkspace, type WorkspaceSubprocess } from './host/workspace.ts'
 import { effectiveConfig, type Config as RuntimeConfig } from './host/config.ts'
 
@@ -180,6 +181,7 @@ export function apply(ctx: Context, config?: RuntimeConfig): void {
   const tools = [
     ...createBrowserTools({ service, saveImage }),
     ...createWorkspaceTools({ workspace }),
+    ...createDesktopTools({ service, saveImage }),
   ]
 
   ctx.effect(() => {

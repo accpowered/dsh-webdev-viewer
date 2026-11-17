@@ -21,6 +21,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import type { BrowserPickedElement } from '../core/protocol.ts'
 import { PAGE_PICKER_CONSOLE_PREFIX, PAGE_PICKER_SCRIPT } from '../core/page-picker.ts'
+import { buildSnapshotExpression } from '../core/snapshot.ts'
 import css from './native-browser.module.css'
 
 /** Main-issued identity of one guest reservation. */
@@ -45,6 +46,8 @@ interface WebviewElement extends HTMLElement {
   canGoForward(): boolean
   isLoading(): boolean
   executeJavaScript(code: string): Promise<unknown>
+  sendInputEvent(event: Record<string, unknown>): void
+  capturePage(): Promise<{ toDataURL(): string; getSize(): { width: number; height: number } }>
 }
 
 interface ConsoleMessageEvent extends Event {
@@ -67,6 +70,7 @@ export interface NativeBrowserHandle {
   reload(): void
   goBack(): void
   goForward(): void
+  request(op: string, args?: unknown): Promise<unknown>
 }
 
 /** Callbacks the native view reports back to the panel. */
@@ -142,8 +146,28 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
   const webviewRef = useRef<WebviewElement | null>(null)
   const readyRef = useRef(false)
   const leaseRef = useRef<DesktopBrowserLeaseId | undefined>(undefined)
+  const waitersRef = useRef<Array<() => void>>([])
+  const consoleRef = useRef<Array<{ level: string; text: string; at: number }>>([])
   const propsRef = useRef(props)
   propsRef.current = props
+
+  /** Resolve every operation waiting for the first document. */
+  const markReady = (): void => {
+    readyRef.current = true
+    for (const resolve of waitersRef.current.splice(0)) resolve()
+  }
+
+  /** Wait for the webview's dom-ready, bounded so a broken guest fails a tool. */
+  const waitReady = async (timeoutMs = 10_000): Promise<WebviewElement> => {
+    if (readyRef.current && webviewRef.current !== null) return webviewRef.current
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('the page did not become ready within 10s')), timeoutMs)
+      waitersRef.current.push(() => { clearTimeout(timer); resolve() })
+    })
+    const element = webviewRef.current
+    if (element === null) throw new Error('the page is not mounted')
+    return element
+  }
 
   const load = (url: string): void => {
     const element = webviewRef.current
@@ -154,11 +178,133 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
     })
   }
 
+  /** Resolve one element target to a viewport point in the guest. */
+  const probeElement = async (element: WebviewElement, args: Record<string, unknown>): Promise<{ x: number; y: number; tag: string; name: string }> => {
+    const selector = typeof args.selector === 'string' ? args.selector : ''
+    if (selector === '') {
+      const x = typeof args.x === 'number' ? args.x : Number.NaN
+      const y = typeof args.y === 'number' ? args.y : Number.NaN
+      if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('click/type needs a selector or x/y')
+      return { x: Math.round(x), y: Math.round(y), tag: 'point', name: '' }
+    }
+    const probe = await element.executeJavaScript(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (el === null) return { ok: false, reason: 'no element matches the selector' };
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = el.getBoundingClientRect();
+      return {
+        ok: rect.width > 0 && rect.height > 0,
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+        tag: el.tagName.toLowerCase(),
+        name: String(el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim().slice(0, 60),
+        reason: rect.width > 0 && rect.height > 0 ? undefined : 'the element has no visible box',
+      };
+    })()`) as Record<string, unknown>
+    if (probe === null || probe.ok !== true || typeof probe.x !== 'number' || typeof probe.y !== 'number') {
+      throw new Error(typeof probe?.reason === 'string' ? probe.reason : 'the element did not resolve')
+    }
+    return {
+      x: Math.round(probe.x),
+      y: Math.round(probe.y),
+      tag: typeof probe.tag === 'string' ? probe.tag : 'element',
+      name: typeof probe.name === 'string' ? probe.name : '',
+    }
+  }
+
+  /** Click one point through the guest's trusted input channel. */
+  const clickPoint = (element: WebviewElement, x: number, y: number): void => {
+    element.sendInputEvent({ type: 'mouseMove', x, y })
+    element.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 })
+    element.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 })
+  }
+
+  /** Execute one Host-requested native operation. */
+  const request = async (op: string, args: unknown): Promise<unknown> => {
+    const element = await waitReady()
+    const input = typeof args === 'object' && args !== null ? args as Record<string, unknown> : {}
+    switch (op) {
+      case 'navigate': {
+        if (typeof input.url !== 'string' || input.url.length === 0) throw new Error('navigate needs a url')
+        await element.loadURL(input.url)
+        return { url: element.getURL(), title: element.getTitle() }
+      }
+      case 'snapshot': {
+        const limit = typeof input.limit === 'number' ? input.limit : 4000
+        return await element.executeJavaScript(buildSnapshotExpression(limit))
+      }
+      case 'click': {
+        const point = await probeElement(element, input)
+        clickPoint(element, point.x, point.y)
+        return point
+      }
+      case 'type': {
+        const text = typeof input.text === 'string' ? input.text : ''
+        if (text.length === 0) return { ok: true }
+        const point = await probeElement(element, input)
+        clickPoint(element, point.x, point.y)
+        const selector = typeof input.selector === 'string' ? input.selector : ''
+        await element.executeJavaScript(`(() => {
+          const el = ${selector === '' ? 'document.activeElement' : `document.querySelector(${JSON.stringify(selector)})`};
+          const text = ${JSON.stringify(text)};
+          if (el === null) throw new Error('input target is missing');
+          el.focus();
+          if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+            const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+            setter.call(el, text);
+          } else if (el.isContentEditable) {
+            el.textContent = text;
+          } else {
+            el.textContent = text;
+          }
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        })()`)
+        return { ok: true }
+      }
+      case 'press': {
+        if (typeof input.key !== 'string' || input.key.length === 0) throw new Error('press needs a key')
+        element.sendInputEvent({ type: 'keyDown', keyCode: input.key })
+        element.sendInputEvent({ type: 'keyUp', keyCode: input.key })
+        return { ok: true }
+      }
+      case 'scroll': {
+        const x = typeof input.x === 'number' ? input.x : 0
+        const y = typeof input.y === 'number' ? input.y : 0
+        const deltaX = typeof input.deltaX === 'number' ? input.deltaX : 0
+        const deltaY = typeof input.deltaY === 'number' ? input.deltaY : 0
+        element.sendInputEvent({ type: 'mouseWheel', x, y, deltaX, deltaY, canScroll: true })
+        return { ok: true }
+      }
+      case 'screenshot': {
+        const image = await element.capturePage()
+        const dataUrl = image.toDataURL()
+        const size = image.getSize()
+        return {
+          data: dataUrl.slice(dataUrl.indexOf(',') + 1),
+          width: size.width,
+          height: size.height,
+          url: element.getURL(),
+          title: element.getTitle(),
+        }
+      }
+      case 'console': {
+        const limit = typeof input.limit === 'number' ? input.limit : 100
+        return consoleRef.current.slice(-limit)
+      }
+      default:
+        throw new Error(`unknown operation: ${op}`)
+    }
+  }
+
   useImperativeHandle(ref, () => ({
     loadUrl(url: string): void { load(url) },
     reload(): void { webviewRef.current?.reload() },
     goBack(): void { try { webviewRef.current?.goBack() } catch { /* no history */ } },
     goForward(): void { try { webviewRef.current?.goForward() } catch { /* no history */ } },
+    request,
   }), [])
 
   useEffect(() => {
@@ -198,11 +344,11 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
       tag.setAttribute('partition', reservation.partition)
       tag.setAttribute('allowpopups', '')
       tag.setAttribute('src', `about:blank#${reservation.lease}`)
-      tag.setAttribute('aria-label', 'Native browser')
+      tag.setAttribute('aria-label', 'Browser')
 
       const signal = listeners.signal
       tag.addEventListener('dom-ready', () => {
-        readyRef.current = true
+        markReady()
         propsRef.current.onLoading?.(false)
         // A native guest starts on about:blank; the real request waits for its
         // first document so loadURL cannot race guest creation.
@@ -238,6 +384,12 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
           if (picked !== null) propsRef.current.onPick?.(picked)
           return
         }
+        consoleRef.current.push({
+          level: String((event as ConsoleMessageEvent).level),
+          text: message,
+          at: Date.now(),
+        })
+        if (consoleRef.current.length > 500) consoleRef.current.splice(0, consoleRef.current.length - 500)
         propsRef.current.onConsole?.({ level: (event as ConsoleMessageEvent).level, message })
       }, { signal })
 
@@ -252,6 +404,7 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
       listeners.abort()
       unsubscribeOpen?.()
       readyRef.current = false
+      for (const resolve of waitersRef.current.splice(0)) resolve()
       webviewRef.current = null
       element?.remove()
       const lease = leaseRef.current

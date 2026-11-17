@@ -100,6 +100,16 @@ export type BrowserViewEvent =
   | { v: 1; kind: 'pick-mode'; enabled: boolean }
   | {
       v: 1
+      kind: 'native-request'
+      /** Correlates the answer with the host's request. */
+      requestId: string
+      /** Operation the native guest should run. */
+      op: string
+      /** Operation-specific arguments. */
+      args?: unknown
+    }
+  | {
+      v: 1
       kind: 'pick-result'
       /** Correlates the answer with the panel's pick request. */
       requestId: string
@@ -152,6 +162,9 @@ export type BrowserViewCommand =
   | { v: 1; kind: 'pick'; requestId: string; x: number; y: number }
   | { v: 1; kind: 'viewport'; width: number; height: number }
   | { v: 1; kind: 'pick-mode'; enabled: boolean }
+  | { v: 1; kind: 'native-attach'; sessionId?: string }
+  | { v: 1; kind: 'native-detach' }
+  | { v: 1; kind: 'native-result'; requestId: string; result?: unknown; error?: string }
 
 /** A console entry the host rang in while the tab was open. */
 export interface BrowserConsoleEntry {
@@ -268,6 +281,13 @@ export function isBrowserViewCommand(value: unknown): value is BrowserViewComman
         && typeof candidate.height === 'number' && Number.isFinite(candidate.height) && candidate.height > 0
     case 'pick-mode':
       return typeof candidate.enabled === 'boolean'
+    case 'native-attach':
+      return candidate.sessionId === undefined || typeof candidate.sessionId === 'string'
+    case 'native-detach':
+      return true
+    case 'native-result':
+      return typeof candidate.requestId === 'string'
+        && (candidate.error === undefined || typeof candidate.error === 'string')
     default:
       return false
   }
