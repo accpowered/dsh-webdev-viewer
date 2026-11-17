@@ -1,6 +1,7 @@
 {
   "meta": {
-    "title": "浏览器视图",
-    "description": "右侧看会话驱动的实时浏览器画面"
+    "title": "WebDev Viewer",
+    "description": "右侧栏里的原生桌面浏览器，用于 Web/Electron 开发。从侧栏引导打开 WebDev Viewer，输入网址；点 Pick 圈选元素（带编号标记，可选备注），点 Style 做临时样式预览。desktop_* 工具驱动同一个原生页面；CDP 工具驱动真实浏览器附加。",
+    "detail": "docs/DETAIL.zh.md"
   }
 }

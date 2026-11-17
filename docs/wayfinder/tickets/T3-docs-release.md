@@ -1,9 +1,9 @@
 ---
 id: T3
 type: task
-status: blocked
-blocked_by: [P1, P2, P3, P4]
-owner: null
+status: in_progress
+blocked_by: []
+owner: lead
 write_scope: README.md, README.zh.md, docs/, locale/, icon.svg, CHANGELOG.md, CONTRIBUTING.md, SECURITY.md, .github/workflows/
 ---
 
@@ -27,6 +27,14 @@ The user asked for an open-source repo. The release must be honest about limitat
 - GitHub repo `accpowered/dsh-webdev-viewer` is public, with the map/research/spec in it.
 - Optional npm package `dsh-webdev-viewer` is published or the install command is documented.
 - The license/attribution is final and consistent.
+
+## Progress (2026-11-17)
+
+- Public repository created and pushed: <https://github.com/accpowered/dsh-webdev-viewer>, main plus tag `v0.1.0`; the temporary deploy key was removed and `/keys` verified empty.
+- README(en/zh), CHANGELOG, CONTRIBUTING, SECURITY, `docs/DETAIL.md`/`.zh.md` and `docs/preview.svg` added.
+- Locale metadata now names WebDev Viewer and declares the detail documents.
+- v0.1.1 source release candidate includes the native Desktop webview, desktop tools, numbered picks/notes, compact style inspector, preview/runner, and Electron/CDP attach.
+- Remaining: npm registry publication (optional), final v0.1.1 tag/push, and the copied upstream client test harness.
 
 ## Resolution
 

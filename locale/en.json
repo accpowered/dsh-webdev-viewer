@@ -1,6 +1,7 @@
 {
   "meta": {
-    "title": "Browser view",
-    "description": "Watch the session's live browser beside the chat."
+    "title": "WebDev Viewer",
+    "description": "A native Desktop browser in the right sidebar for web/Electron work. Use the sidebar guide to open WebDev Viewer, type a URL, click Pick to select elements (numbered markers, optional note) and use Style for a temporary preview. The desktop_* agent tools drive the same guest; CDP tools drive the real-browser attachment.",
+    "detail": "docs/DETAIL.md"
   }
 }

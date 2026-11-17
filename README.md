@@ -2,7 +2,10 @@
 
 A DeepSeek Harness (DSH) plugin for building and verifying web and Electron UIs **inside the right sidebar**, together with an agent.
 
-> Status: **v0.1.0 preview**. It builds, links into the Desktop profile, and the core flow is live-verified: native Desktop sidebar webview, real-browser CDP attach, snapshot/click/type/console/screenshot, element pick-to-quote, static preview with live reload, project runner, and Electron/CDP attach. Not yet published. The native-webview agent bridge, style inspector, native network capture, and full upstream client test harness remain.
+> Status: **v0.1.1 preview**. A native Desktop side-panel browser with element picking, numbered markers,
+> notes, a temporary style inspector, static preview with live reload, project runner, Electron/CDP attach,
+> and agent tools that drive the same guest. Repository: <https://github.com/accpowered/dsh-webdev-viewer>.
+> The copied upstream client UI suites are excluded from the release gate; core/Host tests pass.
 
 ## What it does
 
@@ -48,7 +51,7 @@ socket; it must be hard-refreshed into the client before the first attach.
 
 ## Design direction
 
-The leading candidate is a fork of [`@linxin666/dsh-client-ui-browser-view`](https://www.npmjs.com/package/@linxin666/dsh-client-ui-browser-view), which already provides a CDP-driven Chromium, a screencast panel, snapshot refs, screenshots, and console/network capture. We add human input forwarding, element picking, static preview/live reload, a project runner, and Electron attach.
+Built on a fork of [`@linxin666/dsh-client-ui-browser-view`](https://www.npmjs.com/package/@linxin666/dsh-client-ui-browser-view) 0.4.19 (Apache-2.0). The fork adds a native Desktop `<webview>` surface via the same bridge the shipped sidebar browser uses, the desktop tool family, element picking with numbered markers and notes, a compact style inspector, preview/live-reload, a project runner, and Electron attach. The original CDP screencast remains the web fallback.
 
 See:
 
@@ -70,6 +73,22 @@ tests/       unit, integration, component tests
 scripts/     build and packaging helpers
 ```
 
+## Install (source)
+
+The repository is source-first; build `lib/` and link the package into a DSH Desktop profile:
+
+```sh
+git clone https://github.com/accpowered/dsh-webdev-viewer.git
+cd dsh-webdev-viewer
+pnpm install
+pnpm build
+# add "dsh-webdev-viewer": "link:<absolute path>" to the profile package.json
+# and "dsh-webdev-viewer" to dsh.profile.bundles, then restart DSH Desktop
+```
+
+A packed tarball is produced by `pnpm pack --pack-destination .tmp`. The npm registry package is not
+published at this time.
+
 ## Development status
 
 - [x] Repository scaffold and decision map
@@ -78,9 +97,11 @@ scripts/     build and packaging helpers
 - [x] Fork spike: human input + element picker
 - [x] Static preview + live reload (basic security tests pass)
 - [x] Project runner (detection, logs, URL detection, stop)
-- [ ] Temporary visual style inspector
-- [ ] Electron attach
-- [ ] Full test suite, docs/release, GitHub publication
+- [x] Native Desktop webview + desktop agent tools
+- [x] Element markers, per-pick notes, compact style inspector
+- [x] Electron renderer attach + main-process log workflow
+- [x] GitHub publication and v0.1.1 release candidate
+- [ ] Full upstream client UI test harness and npm registry publication
 
 ## Development
 
@@ -102,4 +123,6 @@ The repository currently ships the Apache License 2.0 text because the upstream 
 
 ## Contributing
 
-Not open for contributions until the v0.1 scope is locked. The wayfinder map is the place to discuss decisions.
+The repository is public. See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`SECURITY.md`](SECURITY.md).
+Reports and pull requests are welcome; keep the desktop/CDP boundary explicit and never commit
+credentials or temporary debug keys.

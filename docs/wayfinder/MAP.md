@@ -76,7 +76,7 @@ Open, unblocked, unclaimed tickets:
 | R6 | research | Pencil/pen.dev interaction patterns | closed | — | research-pencil | [R6](tickets/R6-pen-interactions.md) |
 | R7 | research | Temporary visual style inspector | closed | — | research-style | [R7](tickets/R7-style-editing.md) |
 | G1 | grilling | Round 1: scope, base, window, picker, license | closed | — | lead | [G1](tickets/G1-scope-license.md) |
-| G2 | grilling | Panel UX after the first prototype | in_progress | — | lead | [G2](tickets/G2-panel-ux.md) |
+| G2 | grilling | Panel UX after the first prototype | completed | — | lead | [G2](tickets/G2-panel-ux.md) |
 | P1 | prototype | Fork + human input + element picker | in_progress | G1, R3 | lead | [P1](tickets/P1-fork-input-picker.md) |
 | P2 | prototype | Static preview + live reload | in_progress | — | lead | [P2](tickets/P2-preview-live-reload.md) |
 | P3 | prototype | Electron attach | in_progress | — | lead | [P3](tickets/P3-electron-attach.md) |
@@ -85,4 +85,4 @@ Open, unblocked, unclaimed tickets:
 | T1 | task | Package, build, CI, license, attribution | in_progress | — | lead | [T1](tickets/T1-repo-build-ci.md) |
 | T4 | task | Locked spec and ADRs | open | G1, R1–R7 | — | [T4](tickets/T4-spec-adr.md) |
 | T2 | task | Install and verify in DSH Desktop | in_progress | P1 | lead | [T2](tickets/T2-install-verify.md) |
-| T3 | task | Docs, packaging, release, GitHub publish | blocked | P1, P2, P3, P4 | — | [T3](tickets/T3-docs-release.md) |
+| T3 | task | Docs, packaging, release, GitHub publish | in_progress | — | lead | [T3](tickets/T3-docs-release.md) |
