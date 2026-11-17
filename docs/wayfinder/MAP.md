@@ -80,7 +80,7 @@ Open, unblocked, unclaimed tickets:
 | P1 | prototype | Fork + human input + element picker | in_progress | G1, R3 | lead | [P1](tickets/P1-fork-input-picker.md) |
 | P2 | prototype | Static preview + live reload | in_progress | — | lead | [P2](tickets/P2-preview-live-reload.md) |
 | P3 | prototype | Electron attach | in_progress | — | lead | [P3](tickets/P3-electron-attach.md) |
-| P4 | prototype | Visual style inspector prototype | blocked | G1, R7, P1 | — | [P4](tickets/P4-style-inspector.md) |
+| P4 | prototype | Visual style inspector prototype | completed | — | lead | [P4](tickets/P4-style-inspector.md) |
 | P5 | feature | Native webview agent bridge | completed | — | lead | [P5](tickets/P5-native-agent-bridge.md) |
 | T1 | task | Package, build, CI, license, attribution | in_progress | — | lead | [T1](tickets/T1-repo-build-ci.md) |
 | T4 | task | Locked spec and ADRs | open | G1, R1–R7 | — | [T4](tickets/T4-spec-adr.md) |

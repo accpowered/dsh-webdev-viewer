@@ -1,9 +1,9 @@
 ---
 id: P4
 type: prototype
-status: blocked
-blocked_by: [G1, R7, P1]
-owner: null
+status: completed
+blocked_by: []
+owner: lead
 write_scope: src/client/style/, src/host/style/, tests/style/
 ---
 
@@ -36,4 +36,12 @@ Visual CSS editing is a late addition to v1. A small prototype de-risks the CDP 
 
 ## Resolution
 
-<!-- Fill when closed. -->
+Implemented for the native Desktop guest:
+
+- A picked element exposes a compact Style panel with `color`, `background-color`, `font-size`, `padding`, `margin`, and `border-radius`.
+- Values are read from the guest's computed style and applied live through `element.style.setProperty`; Reset removes each inline property.
+- The panel inserts a quote with the element selector and current values; it never writes source.
+- The page markers are persistent numbered overlays in a closed shadow root, so the agent's DOM snapshot does not see them.
+- A per-pick note input adds an annotation to the quote for the most recent pick.
+
+Limitations: native-only (the CDP fallback has no style panel yet); six common properties, not the full 26; no before/after diff (current values only). Reload clears the inline overrides, which is intentional.

@@ -209,6 +209,44 @@ export function createDesktopTools(deps: DesktopToolDeps): ToolDefinition[] {
     }),
   })
 
+  const consoleTool = defineTool({
+    name: 'webdev_desktop_console',
+    description: 'Return the console messages captured from the desktop webview the user sees. '
+      + 'The guest ring is fed by the webview console-message event; use it for renderer logs and errors. '
+      + '中文触发词：看桌面控制台、桌面报错。',
+    parameters: {
+      limit: { type: 'integer', description: 'Number of recent entries, 1–500; defaults to 100.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          entries: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                level: { type: 'string', required: true },
+                text: { type: 'string', required: true },
+                at: { type: 'integer', required: true },
+              },
+            },
+          },
+          summary: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => renderJson(value),
+    },
+    execute: async (args) => {
+      const limit = typeof args.limit === 'number' ? Math.max(1, Math.min(500, Math.trunc(args.limit))) : 100
+      const entries = await service.nativeConsole(limit)
+      return { entries, summary: `${entries.length} desktop console entr${entries.length === 1 ? 'y' : 'ies'}` }
+    },
+  })
+
   const screenshot = defineTool({
     name: 'webdev_desktop_screenshot',
     description: 'Capture the desktop webview the user sees as an image and return the image. '
@@ -280,5 +318,5 @@ title: ${value.title}
     },
   })
 
-  return [navigate, snapshot, click, type, press, scroll, screenshot]
+  return [navigate, snapshot, click, type, press, scroll, consoleTool, screenshot]
 }

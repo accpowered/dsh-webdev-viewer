@@ -9,7 +9,8 @@ A DeepSeek Harness (DSH) plugin for building and verifying web and Electron UIs 
 - Mount a **native Electron webview** in the right sidebar on DSH Desktop (the same renderer bridge the shipped sidebar browser uses), with a CDP mirror fallback on the web.
 - Drive a real Chromium page from the tab: click, type, scroll, navigate, inspect.
 - Let the user and the agent drive the **same page** through the CDP tools when attached to the real browser; the native webview is the interactive Desktop surface.
-- Select elements with hover/active outlines, then insert a structured reference into the DSH composer. The page-side picker works in the native webview and in the real browser window.
+- Select elements with hover/active outlines and persistent numbered markers; add a note to the last pick and insert a structured quote into the DSH composer. The page-side picker works in the native Desktop guest and in the real browser window.
+- Tweak common visual properties (`color`, background, font size, padding, margin, radius) live on the native guest, reset them, and send the temporary change to the agent as a quote.
 - Preview a workspace folder over a token-gated loopback server and reload it when files change.
 - Run a detected project dev server or an explicit command, stream logs, detect a localhost URL, and open it.
 - Attach to an Electron app's renderer over CDP with `webdev_electron_attach`; pair it with a `webdev_run` launch to capture main-process stdout/stderr via `webdev_logs`.
@@ -30,11 +31,12 @@ socket; it must be hard-refreshed into the client before the first attach.
 
 ## Known limitations
 
-- **Desktop tool bridge.** `webdev_desktop_navigate/snapshot/click/type/press/scroll/screenshot` target
+- **Desktop tool bridge.** `webdev_desktop_navigate/snapshot/click/type/press/scroll/console/screenshot` target
   the native guest through the panel socket. A Host reload causes the panel to re-announce itself on the
   next socket open. The CDP family remains available for the separate real-browser attachment.
-- **Style inspector not in 0.1.** The panel picks elements and quotes them; temporary CSS editing is
-  still planned (P4).
+- **Style editing is native-only and compact.** Six common properties are live-previewed in the native
+  guest; the CDP mirror has no style panel yet, and the quote carries current values rather than a
+  before/after diff.
 - **Electron is renderer attach only.** A debug port must exist at launch; native menus/dialogs/window
   chrome and main-process JavaScript are not reachable. Main-process text logs come from a
   `webdev_run` launch and `webdev_logs`.
