@@ -56,9 +56,9 @@ User ──► sidebar tab (pointer/keyboard) ──► CDP Input.*
 - Client: `src/client/`; renders frames/status/picker/style/logs; never speaks CDP.
 - Shared: `src/core/`; `protocol.ts` is the single wire contract.
 
-## 4. Panel protocol v2
+## 4. Panel protocol (v1, additive)
 
-The current upstream protocol is v1. P1 bumps it to **v2** and updates both halves together. A first frame with the wrong `v` closes the socket with code 1002.
+The current wire version stays **v1**. The input and pick commands are additive kinds; a future breaking change bumps the version and closes a mismatched first frame with code 1002.
 
 ### Commands (panel → host)
 
@@ -66,10 +66,10 @@ The current upstream protocol is v1. P1 bumps it to **v2** and updates both halv
 - `select-tab { tabId }`
 - `request-frame`
 - `close-tab { tabId }`
-- `input { event }` — one mouse/wheel/key/text/IME event; see §5.
+- `input { event }` — one mouse/wheel/key/text event; see §5.
 - `pick { requestId, x, y }` — resolve the element at frame coordinates.
-- `style { requestId, action: 'set' | 'reset' | 'reset-all', ref?, selector?, property?, value? }` — temporary style override (P4).
-- `preview { path? }` / `run { kind, script? }` / `stop { runId? }` — optional panel-initiated Host actions; the same operations are agent tools. **TBD** whether these stay on the panel socket or use exact HTTP routes.
+- `style { requestId, action: 'set' | 'reset' | 'reset-all', ref?, selector?, property?, value? }` — temporary style override (P4, not implemented yet).
+- `preview`/`run`/`stop` remain agent tools for now; the panel's actions will call the same Host methods. **TBD** whether they need panel commands.
 
 ### Events (host → panel)
 
@@ -77,9 +77,9 @@ The current upstream protocol is v1. P1 bumps it to **v2** and updates both halv
 - `state { tabs, activeTabId, running, mode, cdpEndpoint?, message? }`
 - `frame { tabId, seq, width, height, data }` — base64 JPEG; latest-frame-wins.
 - `action { trace }` — one-line agent action.
-- `pick-result { requestId, element }` — element metadata; see §6.
-- `style-state { requestId, properties, applied }` — computed/applied values (P4).
-- `logs { runId, stream: 'stdout' | 'stderr', text, at }` (runner/Electron)
+- `pick-result { requestId, element?, error? }` — element metadata; see §6.
+- `style-state { requestId, properties, applied }` — computed/applied values (P4, not implemented yet).
+- `logs { runId, stream: 'stdout' | 'stderr', text, at }` (runner/Electron, not implemented yet)
 - `error { code, message }`
 
 ### Backpressure
@@ -123,6 +123,7 @@ interface PickedElement {
 - The Host resolves the element with `DOM.getNodeForLocation` + `Runtime.evaluate`; source hints are best-effort (`data-source`, React `_debugSource`, Vue component info).
 - **Staleness is contractual**: if `pageVersion` changed, re-resolve by fingerprint; if exactly one match, rebind; otherwise mark stale and require a re-pick. Never send a bare selector without the fingerprint/page version.
 - Multi-select keeps a list of picks; each has its own note.
+- **P1 implementation status**: the panel keeps a multi-pick list, shows a pick bar with send/clear, and inserts the formatted quote through `inputActions.insertQuote`; the clipboard is the fallback when no composer seat is present. Per-pick notes, Explain/Change chips, and `viewer_pick_request` are not implemented yet.
 - Quote: `inputActions.insertQuote(text, summary)`; if it returns `false`, show an error (draft changed/locked) and keep the picks. The quote includes page URL, page version, each element's label/selector/fingerprint/box/source, and the user's note. It is **not auto-sent**.
 - **Explain/Change chips** (R6, v1 small set): `Explain this` inserts a read-only-intent quote; `Change…` pre-fills a change request. The read-only badge is derived from the tools the agent actually called, not from which chip was pressed. A v2 `viewer_pick_request` lets the agent ask the user to pick.
 
@@ -220,7 +221,7 @@ Volatile fields (live update without remount):
 ## 15. Milestones
 
 1. T1: fork builds, installs, view-only tab works (`webdev_*` tools, frames).
-2. P1: human input + pick→quote; geometry decision; latency numbers.
+2. P1: human input + pick→quote; geometry decision; latency numbers. *(input and pick are built; live verification and geometry are pending a DSH restart.)*
 3. P2: static preview + live reload + runner.
 4. P3: Electron renderer attach + logs.
 5. P4: temporary style inspector.

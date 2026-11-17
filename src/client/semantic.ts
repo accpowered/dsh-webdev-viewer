@@ -29,6 +29,8 @@ export const BROWSER_VIEW_PARTS = {
   frame: 'frame',
   /** Bottom action trace. */
   trace: 'trace',
+  /** Pick-mode hint and pending-pick actions. */
+  pickBar: 'pick-bar',
   /** Connection state marker in the toolbar. */
   status: 'status',
   /** No-frame placeholder. */

@@ -97,7 +97,49 @@ export type BrowserViewEvent =
       data: string
     }
   | { v: 1; kind: 'action'; trace: BrowserActionTrace }
+  | {
+      v: 1
+      kind: 'pick-result'
+      /** Correlates the answer with the panel's pick request. */
+      requestId: string
+      /** Resolved element, or absent when resolution failed. */
+      element?: BrowserPickedElement
+      /** Human-readable failure when no element could be resolved. */
+      error?: string
+    }
   | { v: 1; kind: 'error'; code: string; message: string }
+
+/** One human input event the panel forwards to the page. */
+export type BrowserInputEvent =
+  | {
+      type: 'mouse'
+      action: 'move' | 'down' | 'up'
+      x: number
+      y: number
+      button?: 'left' | 'middle' | 'right' | 'none'
+      buttons?: number
+      clickCount?: number
+      modifiers?: number
+    }
+  | {
+      type: 'wheel'
+      x: number
+      y: number
+      deltaX: number
+      deltaY: number
+      modifiers?: number
+    }
+  | {
+      type: 'key'
+      action: 'down' | 'up'
+      key: string
+      code?: string
+      modifiers?: number
+    }
+  | {
+      type: 'text'
+      text: string
+    }
 
 /** Panel sends one of these to the host. */
 export type BrowserViewCommand =
@@ -105,6 +147,8 @@ export type BrowserViewCommand =
   | { v: 1; kind: 'select-tab'; tabId: string }
   | { v: 1; kind: 'request-frame' }
   | { v: 1; kind: 'close-tab'; tabId: string }
+  | { v: 1; kind: 'input'; event: BrowserInputEvent }
+  | { v: 1; kind: 'pick'; requestId: string; x: number; y: number }
 
 /** A console entry the host rang in while the tab was open. */
 export interface BrowserConsoleEntry {
@@ -168,6 +212,32 @@ export interface BrowserSnapshot {
   truncated: boolean
 }
 
+/** One element resolved from a panel pick gesture. */
+export interface BrowserPickedElement {
+  /** Document generation the pick was taken from. */
+  pageVersion: number
+  /** Unique CSS selector. */
+  selector: string
+  /** Identity used to rebind after a reload/DOM change. */
+  fingerprint: string
+  /** Lowercase tag name. */
+  tag: string
+  /** Element id, when set. */
+  id?: string
+  /** Element classes, when set. */
+  classes?: string[]
+  /** Accessible role, when known. */
+  role?: string
+  /** Accessible name, when known. */
+  name?: string
+  /** Bounded visible text. */
+  text?: string
+  /** Bounding box in CSS pixels, window-relative. */
+  box?: { x: number; y: number; width: number; height: number }
+  /** Best-effort source hint (data-* or framework dev metadata). */
+  source?: { file?: string; line?: number; component?: string }
+}
+
 /** Whether a decoded JSON value is a command this version accepts. */
 export function isBrowserViewCommand(value: unknown): value is BrowserViewCommand {
   if (typeof value !== 'object' || value === null) return false
@@ -182,6 +252,47 @@ export function isBrowserViewCommand(value: unknown): value is BrowserViewComman
       return typeof candidate.tabId === 'string'
     case 'request-frame':
       return true
+    case 'input':
+      return isBrowserInputEvent(candidate.event)
+    case 'pick':
+      return typeof candidate.requestId === 'string'
+        && typeof candidate.x === 'number' && Number.isFinite(candidate.x)
+        && typeof candidate.y === 'number' && Number.isFinite(candidate.y)
+    default:
+      return false
+  }
+}
+
+/**
+ * Validate one panel input event.
+ * @param value - candidate event.
+ * @returns whether the host can dispatch it.
+ */
+export function isBrowserInputEvent(value: unknown): value is BrowserInputEvent {
+  if (typeof value !== 'object' || value === null) return false
+  const event = value as Record<string, unknown>
+  switch (event.type) {
+    case 'mouse':
+      return (event.action === 'move' || event.action === 'down' || event.action === 'up')
+        && typeof event.x === 'number' && Number.isFinite(event.x)
+        && typeof event.y === 'number' && Number.isFinite(event.y)
+        && (event.button === undefined || event.button === 'left' || event.button === 'middle' || event.button === 'right' || event.button === 'none')
+        && (event.buttons === undefined || typeof event.buttons === 'number')
+        && (event.clickCount === undefined || typeof event.clickCount === 'number')
+        && (event.modifiers === undefined || typeof event.modifiers === 'number')
+    case 'wheel':
+      return typeof event.x === 'number' && Number.isFinite(event.x)
+        && typeof event.y === 'number' && Number.isFinite(event.y)
+        && typeof event.deltaX === 'number' && Number.isFinite(event.deltaX)
+        && typeof event.deltaY === 'number' && Number.isFinite(event.deltaY)
+        && (event.modifiers === undefined || typeof event.modifiers === 'number')
+    case 'key':
+      return (event.action === 'down' || event.action === 'up')
+        && typeof event.key === 'string' && event.key.length > 0
+        && (event.code === undefined || typeof event.code === 'string')
+        && (event.modifiers === undefined || typeof event.modifiers === 'number')
+    case 'text':
+      return typeof event.text === 'string'
     default:
       return false
   }

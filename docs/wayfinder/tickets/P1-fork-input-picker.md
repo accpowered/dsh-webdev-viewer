@@ -1,9 +1,9 @@
 ---
 id: P1
 type: prototype
-status: open
+status: in_progress
 blocked_by: [G1, R3]
-owner: null
+owner: lead
 write_scope: src/core/, src/client/, src/host/service.ts, src/host/routes.ts, src/host/tools.ts, tests/core/, tests/client/
 ---
 
@@ -39,6 +39,14 @@ If input forwarding or picker insertion is impractical, the architecture changes
 - The tab body is session-scoped, so `inputActions` is a standard slot prop.
 - Keep the picker overlay in the panel (not the page) if possible; use CDP `DOM.getNodeForLocation` to resolve the element under the click.
 - Use a headed/isolated browser for the spike; do not attach to the user's real Chrome.
+
+## Progress (2026-11-17)
+
+- Added additive v1 protocol commands `input` and `pick`, and the `pick-result` event, with validators.
+- Added `src/core/input.ts` (mouse/wheel/key/text via the same CDP primitives the agent actions use) and `src/core/pick.ts` (element-at-point, selector, fingerprint, box, source hints, page version).
+- Added panel Interact/Watch and Pick toggles, pointer/wheel/key/paste/IME input, a hidden IME textarea, a multi-pick bar, and `inputActions.insertQuote` with a clipboard fallback.
+- `pnpm typecheck` and `pnpm build` pass; the new protocol test passes (`tests/core/protocol.spec.ts`).
+- **Not yet verified in the running DSH**: the installed bundle still needs a DSH restart (`package-moved`). The next step is live verification of click/type/scroll/pick→quote, then latency measurement and the geometry decision.
 
 ## Resolution
 

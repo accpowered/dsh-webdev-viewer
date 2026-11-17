@@ -21,6 +21,7 @@ import {
 import type {
   BrowserActionTrace,
   BrowserPanelState,
+  BrowserPickedElement,
   BrowserTabView,
   BrowserViewCommand,
   BrowserViewEvent,
@@ -59,6 +60,8 @@ export interface BrowserViewSocketHandlers {
   onFrame(frame: BrowserViewFrame): void
   /** The agent performed one tool action. */
   onAction(trace: BrowserActionTrace): void
+  /** A pick gesture resolved, or failed, on the host. */
+  onPickResult?(result: { requestId: string; element?: BrowserPickedElement; error?: string }): void
   /** The host reported a failure the panel must show instead of a frame. */
   onError(code: string, message: string): void
 }
@@ -250,6 +253,18 @@ export function parseBrowserViewEvent(value: unknown): BrowserViewEvent | null {
         trace: { tool: row.tool, summary: row.summary, at: row.at },
       }
     }
+    case 'pick-result': {
+      if (typeof candidate.requestId !== 'string') return null
+      const element = candidate.element
+      if (element !== undefined && (typeof element !== 'object' || element === null)) return null
+      return {
+        v: BROWSER_VIEW_API_VERSION,
+        kind: 'pick-result',
+        requestId: candidate.requestId,
+        ...element === undefined ? {} : { element: element as BrowserPickedElement },
+        ...typeof candidate.error === 'string' ? { error: candidate.error } : {},
+      }
+    }
     case 'error': {
       if (typeof candidate.code !== 'string' || typeof candidate.message !== 'string') return null
       return { v: BROWSER_VIEW_API_VERSION, kind: 'error', code: candidate.code, message: candidate.message }
@@ -335,6 +350,9 @@ export function connectBrowserViewSocket(
       }
       case 'action':
         handlers.onAction(event.trace)
+        return
+      case 'pick-result':
+        handlers.onPickResult?.(event)
         return
       case 'error':
         handlers.onError(event.code, event.message)

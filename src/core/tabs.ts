@@ -94,6 +94,8 @@ interface TabRecord {
   frameSeq: number
   /** Depth-first ref to CSS selector map captured by the last snapshot. */
   refs: Map<number, string>
+  /** Increments whenever a new top-level document replaces the observed one. */
+  pageVersion: number
 }
 
 /** Params of one `Page.screencastFrame` event. */
@@ -283,6 +285,13 @@ export class TabManager {
     return record.sessionId
   }
 
+  /** Document generation of one tab, used to detect stale picks. */
+  versionOf(tabId: string): number {
+    const record = this.tabs.get(tabId)
+    if (record === undefined) throw new Error(`unknown tab "${tabId}"; call webdev_tabs to see the open tabs`)
+    return record.pageVersion
+  }
+
   /**
    * Create one tab and instrument it.
    * @param options - url to open and the session that asked for it.
@@ -367,6 +376,7 @@ export class TabManager {
       screencastRunning: false,
       frameSeq: 0,
       refs: new Map(),
+      pageVersion: 0,
     }
     this.tabs.set(targetId, record)
     this.bySession.set(sessionId, record)
@@ -744,6 +754,7 @@ export class TabManager {
       const documentReplaced = (url !== undefined && url !== record.url)
         || (loaderId !== undefined && record.loaderId !== undefined && loaderId !== record.loaderId)
       if (documentReplaced) this.resetObservation(record)
+      if (documentReplaced) record.pageVersion += 1
       if (url !== undefined) record.url = url
       if (loaderId !== undefined) record.loaderId = loaderId
       this.onTabsChanged?.()

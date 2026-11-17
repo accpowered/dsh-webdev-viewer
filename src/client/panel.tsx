@@ -37,7 +37,7 @@ import {
   type StateDotState,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { BrowserActionTrace, BrowserPanelState } from '../core/protocol.ts'
+import type { BrowserActionTrace, BrowserInputEvent, BrowserPanelState, BrowserPickedElement } from '../core/protocol.ts'
 import { BROWSER_VIEW_API_VERSION } from '../core/protocol.ts'
 import type { BrowserViewLiveTitleStore } from './live-title.ts'
 import { BROWSER_VIEW_PARTS, BROWSER_VIEW_PLUGIN } from './semantic.ts'
@@ -59,6 +59,18 @@ export interface BrowserViewPanelFace {
   readonly sessionId?: string
   /** Channel the chip reads this body's page title from. */
   readonly liveTitle?: BrowserViewLiveTitleStore
+  /** Composer insertion seat; absent outside a session-scoped tab. */
+  readonly inputActions?: ComposerInputActions
+}
+
+/** The composer operation a pick uses; intentionally structural. */
+export interface ComposerInputActions {
+  /**
+   * Insert one quote into the current draft.
+   * @param text - quote text.
+   * @returns whether the draft accepted the insertion.
+   */
+  insertQuote(text: string): boolean
 }
 
 /** Panel props: the locale seat, the injected face, and the seams a test may supply. */
@@ -80,18 +92,98 @@ function cx(...names: ReadonlyArray<string | false | null | undefined>): string 
   return names.filter((name): name is string => typeof name === 'string' && name.length > 0).join(' ')
 }
 
+/** Clamp one coordinate into the frame's logical space. */
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+/** Keys the page should receive as real key events rather than text insertion. */
+const KEY_NAMES = new Set([
+  'Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown',
+  'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown',
+])
+
+/** CDP modifier bitmask: Alt 1, Ctrl 2, Meta 4, Shift 8. */
+function modifiersOf(event: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }): number {
+  return (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0)
+}
+
+/** Render picked elements as one composer quote. */
+function formatPicks(picks: ReadonlyArray<BrowserPickedElement>, url: string): string {
+  const lines = [`## WebDev picks (${picks.length})`, `Page: ${url}`]
+  picks.forEach((pick, index) => {
+    const label = [
+      pick.tag,
+      pick.id === undefined ? '' : `#${pick.id}`,
+      pick.classes === undefined || pick.classes.length === 0 ? '' : `.${pick.classes.join('.')}`,
+    ].join('')
+    lines.push('', `### ${index + 1}. ${label}${pick.name === undefined ? '' : ` "${pick.name}"`}`)
+    lines.push(`- selector: \`${pick.selector}\``)
+    lines.push(`- fingerprint: \`${pick.fingerprint}\``)
+    if (pick.role !== undefined) lines.push(`- role: ${pick.role}`)
+    if (pick.box !== undefined) lines.push(`- box: ${pick.box.x},${pick.box.y} ${pick.box.width}x${pick.box.height}`)
+    if (pick.source?.file !== undefined) lines.push(`- source: ${pick.source.file}${pick.source.line === undefined ? '' : `:${pick.source.line}`}`)
+    if (pick.source?.component !== undefined) lines.push(`- component: ${pick.source.component}`)
+    if (pick.text !== undefined) lines.push(`- text: ${pick.text}`)
+  })
+  lines.push('', 'Use webdev_snapshot to confirm the current DOM before acting; a pick can be stale.')
+  return lines.join('\n')
+}
+
+/** Cursor mark for the interact toggle. */
+function CursorIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M3 1.5l9.5 6.2-4.1.8-2.1 3.9L3 1.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+/** Eye mark for the watch toggle. */
+function EyeIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M1.5 8s2.4-4 6.5-4 6.5 4 6.5 4-2.4 4-6.5 4S1.5 8 1.5 8z" stroke="currentColor" strokeWidth="1.3" />
+      <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  )
+}
+
+/** Crosshair mark for the pick toggle. */
+function PickIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <circle cx="8" cy="8" r="4.2" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M8 1v3M8 12v3M1 8h3M12 8h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 /**
  * Render the browser view tab body.
  * @param props - composed slot props.
  * @returns the tab content.
  */
-export function BrowserViewPanel({ t, sessionId, liveTitle, socketFactory, location }: BrowserViewPanelProps) {
+export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socketFactory, location }: BrowserViewPanelProps) {
   const [state, setState] = useState<BrowserPanelState>(EMPTY_STATE)
   const [frame, setFrame] = useState<BrowserViewFrame | null>(null)
   const [traces, setTraces] = useState<ReadonlyArray<BrowserActionTrace>>([])
   const [error, setError] = useState<{ readonly code: string; readonly message: string } | null>(null)
   const [status, setStatus] = useState<BrowserViewSocketStatus>('connecting')
+  const [interact, setInteract] = useState(true)
+  const [picking, setPicking] = useState(false)
+  const [picks, setPicks] = useState<ReadonlyArray<BrowserPickedElement>>([])
+  const [pickError, setPickError] = useState<string | null>(null)
+  const [pickNotice, setPickNotice] = useState<string | null>(null)
   const socketRef = useRef<BrowserViewSocket | null>(null)
+  const frameHostRef = useRef<HTMLDivElement | null>(null)
+  const imageRef = useRef<HTMLImageElement | null>(null)
+  const imeRef = useRef<HTMLTextAreaElement | null>(null)
+  const pickRequestRef = useRef<string | null>(null)
+  const frameDataRef = useRef<BrowserViewFrame | null>(null)
+  const interactRef = useRef(interact)
+  interactRef.current = interact
+  const lastPointerMoveRef = useRef(0)
   /** Last active tab seen in a state push; a tab switch invalidates the picture. */
   const lastActiveTabRef = useRef<string | null>(null)
   /** Browser source seen in the last state push; a source switch invalidates it too. */
@@ -115,9 +207,19 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, socketFactory, locat
           lastActiveTabRef.current = next.activeTabId
           setFrame(null)
           setError(null)
+          setPicks([])
+          setPicking(false)
+          setPickError(null)
+          setPickNotice(null)
+          pickRequestRef.current = null
         } else if (lastActiveTabRef.current !== next.activeTabId) {
           lastActiveTabRef.current = next.activeTabId
           setFrame(null)
+          setPicks([])
+          setPicking(false)
+          setPickError(null)
+          setPickNotice(null)
+          pickRequestRef.current = null
         }
         setState(next)
       },
@@ -127,6 +229,20 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, socketFactory, locat
       },
       onAction: (trace) => {
         setTraces((current) => [trace, ...current].slice(0, TRACE_LIMIT))
+      },
+      onPickResult: (result) => {
+        if (result.requestId !== pickRequestRef.current) return
+        pickRequestRef.current = null
+        if (result.error !== undefined) {
+          setPickError(result.error)
+          return
+        }
+        const element = result.element
+        if (element !== undefined) {
+          setPicks((current) => [...current, element])
+          setPickError(null)
+          setPickNotice(null)
+        }
       },
       onError: (code, message) => { setError({ code, message }) },
     })
@@ -166,6 +282,195 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, socketFactory, locat
   const pageTitle = activeTab === null || activeTab.title.length === 0 ? undefined : activeTab.title
   const url = activeTab?.url ?? ''
 
+  frameDataRef.current = visibleFrame
+  const frameVisible = dataUrl !== null
+
+  // A native listener because React's wheel subscription is passive: without
+  // preventDefault the column scrolls instead of the page.
+  useEffect(() => {
+    const host = frameHostRef.current
+    if (host === null) return
+    const onWheel = (event: WheelEvent): void => {
+      const current = frameDataRef.current
+      if (!interactRef.current || current === null) return
+      const target = imageRef.current
+      const rect = target === null ? host.getBoundingClientRect() : target.getBoundingClientRect()
+      if (rect.width <= 0 || rect.height <= 0) return
+      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) return
+      event.preventDefault()
+      const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? current.height : 1
+      socketRef.current?.send({
+        v: BROWSER_VIEW_API_VERSION,
+        kind: 'input',
+        event: {
+          type: 'wheel',
+          x: clamp((event.clientX - rect.left) * current.width / rect.width, 0, current.width),
+          y: clamp((event.clientY - rect.top) * current.height / rect.height, 0, current.height),
+          deltaX: event.deltaX * scale,
+          deltaY: event.deltaY * scale,
+          modifiers: modifiersOf(event),
+        },
+      })
+    }
+    host.addEventListener('wheel', onWheel, { passive: false })
+    return () => { host.removeEventListener('wheel', onWheel) }
+  }, [frameVisible])
+
+  const pointOf = (clientX: number, clientY: number): { x: number; y: number } | null => {
+    const host = frameHostRef.current
+    const current = frameDataRef.current
+    if (host === null || current === null) return null
+    const target = imageRef.current
+    const rect = target === null ? host.getBoundingClientRect() : target.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return null
+    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return null
+    return {
+      x: clamp((clientX - rect.left) * current.width / rect.width, 0, current.width),
+      y: clamp((clientY - rect.top) * current.height / rect.height, 0, current.height),
+    }
+  }
+
+  const sendInput = (event: BrowserInputEvent): void => {
+    socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'input', event })
+  }
+
+  const focusIme = (): void => {
+    const element = imeRef.current
+    if (element !== null && document.activeElement !== element) element.focus({ preventScroll: true })
+  }
+
+  const pointerButton = (event: React.PointerEvent<HTMLDivElement>): 'left' | 'middle' | 'right' => {
+    return event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left'
+  }
+
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (visibleFrame === null) return
+    const point = pointOf(event.clientX, event.clientY)
+    if (point === null) return
+    if (picking) {
+      event.preventDefault()
+      const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+      pickRequestRef.current = requestId
+      setPickError(null)
+      setPickNotice(null)
+      socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'pick', requestId, x: point.x, y: point.y })
+      return
+    }
+    if (!interact) return
+    event.preventDefault()
+    focusIme()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    sendInput({
+      type: 'mouse',
+      action: 'down',
+      x: point.x,
+      y: point.y,
+      button: pointerButton(event),
+      buttons: event.buttons === 0 ? 1 : event.buttons,
+      clickCount: event.detail > 0 ? event.detail : 1,
+      modifiers: modifiersOf(event),
+    })
+  }
+
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (!interact || picking || visibleFrame === null) return
+    const now = Date.now()
+    if (event.buttons === 0 && now - lastPointerMoveRef.current < 16) return
+    lastPointerMoveRef.current = now
+    const point = pointOf(event.clientX, event.clientY)
+    if (point === null) return
+    sendInput({
+      type: 'mouse',
+      action: 'move',
+      x: point.x,
+      y: point.y,
+      button: 'none',
+      buttons: event.buttons,
+      clickCount: 0,
+      modifiers: modifiersOf(event),
+    })
+  }
+
+  const onPointerUp = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (!interact || picking || visibleFrame === null) return
+    const point = pointOf(event.clientX, event.clientY)
+    if (point === null) return
+    event.preventDefault()
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    sendInput({
+      type: 'mouse',
+      action: 'up',
+      x: point.x,
+      y: point.y,
+      button: pointerButton(event),
+      buttons: 0,
+      clickCount: 1,
+      modifiers: modifiersOf(event),
+    })
+  }
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (!interact) return
+    const native = event.nativeEvent
+    if (native.isComposing || native.key === 'Process' || native.key === 'Unidentified') return
+    if (native.key.length !== 1 && !KEY_NAMES.has(native.key)) return
+    event.preventDefault()
+    const key = native.key === ' ' ? 'Space' : native.key
+    sendInput({ type: 'key', action: 'down', key, code: native.code, modifiers: modifiersOf(native) })
+    sendInput({ type: 'key', action: 'up', key, code: native.code, modifiers: modifiersOf(native) })
+    event.currentTarget.value = ''
+  }
+
+  const onPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>): void => {
+    if (!interact) return
+    const text = event.clipboardData.getData('text')
+    if (text.length === 0) return
+    event.preventDefault()
+    sendInput({ type: 'text', text })
+    event.currentTarget.value = ''
+  }
+
+  const onCompositionEnd = (event: React.CompositionEvent<HTMLTextAreaElement>): void => {
+    if (!interact) return
+    const text = event.data
+    if (text.length > 0) sendInput({ type: 'text', text })
+    event.currentTarget.value = ''
+  }
+
+  const clearPicks = (): void => {
+    setPicks([])
+    setPickError(null)
+    setPickNotice(null)
+    pickRequestRef.current = null
+  }
+
+  const sendPicks = (): void => {
+    if (picks.length === 0) return
+    const quote = formatPicks(picks, url)
+    const accepted = inputActions?.insertQuote(quote)
+    if (accepted === true) {
+      setPicks([])
+      setPicking(false)
+      setPickError(null)
+      setPickNotice(t('panel.pick.sent'))
+      return
+    }
+    if (accepted === false) {
+      setPickError(t('panel.pick.insertFailed'))
+      return
+    }
+    // No composer seat (for example a tab rendered outside a session): keep the
+    // review useful by putting the quote on the clipboard instead of dropping it.
+    void navigator.clipboard?.writeText(quote).then(
+      () => { setPickNotice(t('panel.pick.copied')) },
+      () => { setPickError(t('panel.pick.copyFailed')) },
+    )
+  }
+
+  const pickCount = t('panel.pick.count').replace('{count}', String(picks.length))
+
   // The chip beside this tab names the page being streamed, and only this body
   // can know that name. Publishing in an effect keeps render pure; the cleanup
   // clears the entry so a closed tab leaves no stale name behind.
@@ -193,6 +498,32 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, socketFactory, locat
             onClick={(event) => { event.currentTarget.select() }}
           />
         </div>
+        <button
+          type="button"
+          className={cx(css.tool, interact && css.toolActive)}
+          title={interact ? t('panel.toolbar.watch') : t('panel.toolbar.interact')}
+          aria-label={interact ? t('panel.toolbar.watch') : t('panel.toolbar.interact')}
+          aria-pressed={interact}
+          disabled={activeTab === null}
+          onClick={() => { setInteract((value) => !value) }}
+        >
+          {interact ? <CursorIcon /> : <EyeIcon />}
+        </button>
+        <button
+          type="button"
+          className={cx(css.tool, picking && css.toolActive)}
+          title={t('panel.toolbar.pick')}
+          aria-label={t('panel.toolbar.pick')}
+          aria-pressed={picking}
+          disabled={activeTab === null}
+          onClick={() => {
+            setPicking((value) => !value)
+            setPickError(null)
+            setPickNotice(null)
+          }}
+        >
+          <PickIcon />
+        </button>
         <span
           className={css.status}
           data-dsh-part={BROWSER_VIEW_PARTS.status}
@@ -219,6 +550,25 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, socketFactory, locat
           <IconRefreshOutlineRegular />
         </button>
       </div>
+      {(picking || picks.length > 0 || pickError !== null || pickNotice !== null) && (
+        <div className={css.pickBar} data-dsh-part={BROWSER_VIEW_PARTS.pickBar}>
+          <span className={css.pickHint}>{picking ? t('panel.pick.hint') : pickCount}</span>
+          <span className={css.pickActions}>
+            {picks.length > 0 && (
+              <button type="button" className={css.pickButton} onClick={sendPicks}>
+                {t('panel.pick.send')}
+              </button>
+            )}
+            {picks.length > 0 && (
+              <button type="button" className={css.pickButton} onClick={clearPicks}>
+                {t('panel.pick.clear')}
+              </button>
+            )}
+          </span>
+          {pickError !== null && <span className={css.pickError} role="alert">{pickError}</span>}
+          {pickNotice !== null && <span className={css.pickNotice} role="status">{pickNotice}</span>}
+        </div>
+      )}
       {state.tabs.length > 1 && (
         <div className={css.tabs} role="tablist" data-dsh-part={BROWSER_VIEW_PARTS.tabs}>
           {state.tabs.map((tab) => (
@@ -251,15 +601,39 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, socketFactory, locat
             <span className={css.emptyHint}>{t('panel.empty.hint')}</span>
           </div>
         ) : (
-          <img
-            className={css.frame}
+          <div
+            ref={frameHostRef}
+            className={cx(css.frameHost, picking && css.picking)}
             data-dsh-part={BROWSER_VIEW_PARTS.frame}
-            src={dataUrl}
-            alt={t('panel.frame.alt')}
-            width={visibleFrame.width}
-            height={visibleFrame.height}
-            draggable={false}
-          />
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+            onContextMenu={(event) => { event.preventDefault() }}
+          >
+            <img
+              ref={imageRef}
+              className={css.frame}
+              src={dataUrl}
+              alt={t('panel.frame.alt')}
+              width={visibleFrame.width}
+              height={visibleFrame.height}
+              draggable={false}
+            />
+            <textarea
+              ref={imeRef}
+              className={css.ime}
+              aria-hidden="true"
+              tabIndex={-1}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              onKeyDown={onKeyDown}
+              onPaste={onPaste}
+              onCompositionEnd={onCompositionEnd}
+            />
+          </div>
         )}
       </div>
       <footer className={css.trace} data-dsh-part={BROWSER_VIEW_PARTS.trace}>

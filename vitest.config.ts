@@ -28,9 +28,7 @@ export default defineConfig({
     // cannot start here. Worker threads need no named-pipe child spawn and are
     // also fine on CI.
     pool: 'threads',
-    poolOptions: {
-      threads: { singleThread: true },
-    },
+    maxWorkers: 1,
     server: {
       deps: {
         inline: [/@deepseek-ai\//],

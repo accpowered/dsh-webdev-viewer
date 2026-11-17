@@ -19,6 +19,7 @@ A published, installable `dsh-webdev-viewer` v0.1: a DSH right-sidebar workbench
 - **Fallback if P1 misses the input-latency bar**: dual carrier (Electron webview for the human, CDP attach for the agent on the same renderer) is an architecture change; do not start it until P1 measures.
 - **Style editor scope**: temporary overrides + structured before/after quote; common visual properties; live preview + manual send; **no direct source writes**.
 - **Scaffold**: repository, README, license, notice, research tickets, and this map were created 2026-11-17.
+- **First fork installed (2026-11-17)**: typecheck and build pass; the bundle is linked into the `desktop` profile. The install reports `restart-required` (`package-moved`), so the plugin is not live until DSH restarts. The first build is the upstream view-only layer; P1-P4 add input, picking, preview and style.
 
 ## Decisions so far
 
@@ -76,7 +77,7 @@ Open, unblocked, unclaimed tickets:
 | R7 | research | Temporary visual style inspector | closed | — | research-style | [R7](tickets/R7-style-editing.md) |
 | G1 | grilling | Round 1: scope, base, window, picker, license | closed | — | lead | [G1](tickets/G1-scope-license.md) |
 | G2 | grilling | Panel UX after the first prototype | blocked | P1 | — | [G2](tickets/G2-panel-ux.md) |
-| P1 | prototype | Fork + human input + element picker | open | G1, R3 | — | [P1](tickets/P1-fork-input-picker.md) |
+| P1 | prototype | Fork + human input + element picker | in_progress | G1, R3 | lead | [P1](tickets/P1-fork-input-picker.md) |
 | P2 | prototype | Static preview + live reload | open | G1, R4 | — | [P2](tickets/P2-preview-live-reload.md) |
 | P3 | prototype | Electron attach | open | G1, R5 | — | [P3](tickets/P3-electron-attach.md) |
 | P4 | prototype | Visual style inspector prototype | blocked | G1, R7, P1 | — | [P4](tickets/P4-style-inspector.md) |

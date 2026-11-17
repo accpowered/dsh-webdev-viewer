@@ -27,6 +27,8 @@ import { ChromeProcess } from '../core/chrome.ts'
 import { TabManager, type ScreencastFrame } from '../core/tabs.ts'
 import { buildSnapshot, type SnapshotResult } from '../core/snapshot.ts'
 import { planScreenshot, type ScreenshotPlan, type ScreenshotRequest } from '../core/screenshot.ts'
+import { dispatchInput } from '../core/input.ts'
+import { pickElement } from '../core/pick.ts'
 import { DOCUMENT_TEXT_EXPRESSION, isAuthChallengeText, isLoopbackTarget } from './auth.ts'
 import { fetchCdpVersion, parseCdpEndpoint, realBrowserConnectionError } from './cdp-endpoint.ts'
 import {
@@ -392,6 +394,30 @@ export class BrowserViewService implements BrowserViewBackend {
             throw new Error('an adopted real-browser tab can only be closed in the browser or by webdev_close with an explicit tab_id')
           }
           await this.closeTab(command.tabId)
+          return
+        }
+        case 'input': {
+          const tabId = this.displayedOrDefault()
+          if (tabId === null) throw new Error('no page is being watched; open a page first')
+          await dispatchInput(this.scope(), tabId, command.event)
+          return
+        }
+        case 'pick': {
+          const tabId = this.displayedOrDefault()
+          if (tabId === null) throw new Error('no page is being watched; open a page first')
+          try {
+            const element = await pickElement(this.scope(), tabId, command.x, command.y)
+            sink.send({ v: 1, kind: 'pick-result', requestId: command.requestId, element })
+          } catch (error) {
+            // A pick failure is local to one gesture: answer the requesting
+            // panel instead of failing the whole socket with a global error.
+            sink.send({
+              v: 1,
+              kind: 'pick-result',
+              requestId: command.requestId,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
           return
         }
         default: {
