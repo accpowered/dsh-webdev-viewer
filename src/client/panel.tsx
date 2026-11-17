@@ -209,6 +209,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   const [nativeError, setNativeError] = useState<string | null>(null)
   const [styleOpen, setStyleOpen] = useState(false)
   const [styleValues, setStyleValues] = useState<Record<string, string>>({})
+  const [styleOriginal, setStyleOriginal] = useState<Record<string, string>>({})
   const [styleError, setStyleError] = useState<string | null>(null)
   const nativeRef = useRef<NativeBrowserHandle | null>(null)
   const socketRef = useRef<BrowserViewSocket | null>(null)
@@ -672,12 +673,11 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     if (!nativeActive) socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'pick-mode', enabled: false })
   }
 
-  const updateLastNote = (note: string): void => {
+  const updatePickNote = (index: number, note: string): void => {
     setPicks((current) => {
-      if (current.length === 0) return current
+      if (index < 0 || index >= current.length) return current
       const next = current.slice()
-      const last = next[next.length - 1]
-      next[next.length - 1] = { ...last, note }
+      next[index] = { ...next[index], note }
       return next
     })
   }
@@ -700,6 +700,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           if (typeof value === 'string') next[field.key] = value
         }
         setStyleValues(next)
+        setStyleOriginal(next)
       }
     } catch (error) {
       setStyleError(error instanceof Error ? error.message : String(error))
@@ -721,7 +722,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
 
   const resetStyle = (property: string): void => {
     if (!nativeActive || lastPick === undefined) return
-    setStyleValues((current) => ({ ...current, [property]: '' }))
+    setStyleValues((current) => ({ ...current, [property]: styleOriginal[property] ?? '' }))
     setStyleError(null)
     void nativeRef.current?.request('style-reset', {
       selector: lastPick.selector,
@@ -733,12 +734,17 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
 
   const sendStyle = (): void => {
     if (lastPick === undefined) return
+    const changed = STYLE_FIELDS.filter((field) => (styleValues[field.key] ?? '') !== (styleOriginal[field.key] ?? ''))
+    if (changed.length === 0) {
+      setStyleError(t('panel.style.noChanges'))
+      return
+    }
     const lines = [
       '## WebDev style change',
       `Page: ${displayUrl}`,
       `Element: \`${lastPick.selector}\``,
       '',
-      ...STYLE_FIELDS.map((field) => `- ${field.key}: ${styleValues[field.key] ?? ''}`),
+      ...changed.map((field) => `- ${field.key}: ${styleOriginal[field.key] ?? ''} -> ${styleValues[field.key] ?? ''}`),
       '',
       'Temporary preview only; update the source to persist it.',
     ]
@@ -976,16 +982,6 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
       {(picking || picks.length > 0 || pickError !== null || pickNotice !== null) && (
         <div className={css.pickBar} data-dsh-part={BROWSER_VIEW_PARTS.pickBar}>
           <span className={css.pickHint}>{picking ? t('panel.pick.hint') : pickCount}</span>
-          {picks.length > 0 && (
-            <input
-              className={css.noteInput}
-              type="text"
-              value={picks[picks.length - 1]?.note ?? ''}
-              placeholder={t('panel.pick.note')}
-              aria-label={t('panel.pick.note')}
-              onChange={(event) => { updateLastNote(event.currentTarget.value) }}
-            />
-          )}
           <span className={css.pickActions}>
             {picks.length > 0 && (
               <button type="button" className={css.pickButton} onClick={sendPicks}>
@@ -1005,6 +1001,27 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           </span>
           {pickError !== null && <span className={css.pickError} role="alert">{pickError}</span>}
           {pickNotice !== null && <span className={css.pickNotice} role="status">{pickNotice}</span>}
+        </div>
+      )}
+      {picks.length > 0 && (
+        <div className={css.pickList}>
+          {picks.map((pick, index) => (
+            <div className={css.pickRow} key={`${pick.fingerprint}-${index}`}>
+              <span className={css.pickNumber}>{index + 1}</span>
+              <span className={css.pickLabel} title={pick.selector}>
+                {pick.tag}
+                {pick.id === undefined ? '' : `#${pick.id}`}
+              </span>
+              <input
+                className={css.pickNote}
+                type="text"
+                value={pick.note ?? ''}
+                placeholder={t('panel.pick.note')}
+                aria-label={`${t('panel.pick.note')} ${index + 1}`}
+                onChange={(event) => { updatePickNote(index, event.currentTarget.value) }}
+              />
+            </div>
+          ))}
         </div>
       )}
       {styleOpen && nativeActive && lastPick !== undefined && (

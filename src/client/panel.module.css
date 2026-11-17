@@ -521,6 +521,66 @@
   outline: none;
 }
 
+.pickList {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 132px;
+  padding: 5px 8px;
+  overflow: auto;
+  background: var(--dsw-alias-bg-layer-1);
+  border-bottom: 0.5px solid var(--dsw-alias-border-l3);
+}
+
+.pickRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pickNumber {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--dsw-alias-bg-base);
+  font: var(--dsw-font-xxxs-11);
+  background: var(--dsw-alias-brand-primary);
+  border-radius: 50%;
+}
+
+.pickLabel {
+  flex: 0 1 auto;
+  max-width: 38%;
+  overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pickNote {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-xxxs-11);
+  background: var(--dsw-alias-bg-base);
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  outline: none;
+}
+
+.pickNote:focus {
+  border-color: var(--dsw-alias-brand-primary);
+}
+
 .noteInput:focus {
   border-color: var(--dsw-alias-brand-primary);
 }
