@@ -20,6 +20,7 @@
  */
 
 import type { CdpTransport } from './cdp.ts'
+import { PAGE_PICKER_BINDING, PAGE_PICKER_SCRIPT } from './page-picker.ts'
 import {
   DEFAULT_JPEG_QUALITY,
   DEFAULT_VIEWPORT,
@@ -60,6 +61,8 @@ export interface TabManagerOptions {
   onFrame?: (frame: ScreencastFrame) => void
   /** Notifies that a tab's url, title, loading state, or membership changed. */
   onTabsChanged?: () => void
+  /** Receives one JSON payload from the page-side picker. */
+  onPagePick?: (tabId: string, payload: string) => void
   /** Discover and adopt existing/future page targets instead of only DSH-created ones. */
   discoverTargets?: boolean
   /** Pin new tabs to the fixed isolated viewport. @default true */
@@ -96,6 +99,10 @@ interface TabRecord {
   refs: Map<number, string>
   /** Increments whenever a new top-level document replaces the observed one. */
   pageVersion: number
+  /** Size the panel asked this tab to render at, if it has asked. */
+  viewportOverride?: { width: number; height: number }
+  /** Whether the page-side picker binding/script has been installed at least once. */
+  pagePickerInstalled?: boolean
 }
 
 /** Params of one `Page.screencastFrame` event. */
@@ -188,6 +195,7 @@ export class TabManager {
   private readonly pinViewports: boolean
   private onFrame: ((frame: ScreencastFrame) => void) | undefined
   private onTabsChanged: (() => void) | undefined
+  private onPagePick: ((tabId: string, payload: string) => void) | undefined
   private readonly tabs = new Map<string, TabRecord>()
   private readonly bySession = new Map<string, TabRecord>()
   private readonly unsubscribers: Array<() => void> = []
@@ -208,6 +216,7 @@ export class TabManager {
     this.pinViewports = options.pinViewport ?? true
     this.onFrame = options.onFrame
     this.onTabsChanged = options.onTabsChanged
+    this.onPagePick = options.onPagePick
     this.subscribe()
   }
 
@@ -419,6 +428,62 @@ export class TabManager {
   }
 
   /**
+   * Resize one tab to the panel's content box so the page renders at 1:1
+   * instead of being scaled down to an unreadable screenshot.
+   * @param tabId - target tab.
+   * @param width - requested CSS width.
+   * @param height - requested CSS height.
+   */
+  async setViewport(tabId: string, width: number, height: number): Promise<void> {
+    const record = this.requireRecord(tabId)
+    const w = Math.max(200, Math.min(4096, Math.round(width)))
+    const h = Math.max(200, Math.min(4096, Math.round(height)))
+    await this.transport.send('Emulation.setDeviceMetricsOverride', {
+      width: w,
+      height: h,
+      deviceScaleFactor: 1,
+      mobile: false,
+    }, record.sessionId)
+    record.viewportOverride = { width: w, height: h }
+    await this.refreshFrame(tabId).catch(() => undefined)
+  }
+
+  /**
+   * Install the page-side picker in one tab. The script is idempotent, so this
+   * can be called again after a navigation.
+   * @param tabId - target tab.
+   */
+  async installPagePicker(tabId: string): Promise<void> {
+    const record = this.requireRecord(tabId)
+    if (record.pagePickerInstalled !== true) {
+      try {
+        await this.transport.send('Runtime.addBinding', { name: PAGE_PICKER_BINDING }, record.sessionId)
+      } catch {
+        // A duplicate binding is not a failure: the same session may already
+        // have the binding from a previous enable.
+      }
+      record.pagePickerInstalled = true
+    }
+    await this.transport.send('Runtime.evaluate', {
+      expression: PAGE_PICKER_SCRIPT,
+      returnByValue: false,
+    }, record.sessionId)
+  }
+
+  /**
+   * Enable or disable the page-side picker in one tab.
+   * @param tabId - target tab.
+   * @param enabled - whether a click should pick.
+   */
+  async setPagePickerEnabled(tabId: string, enabled: boolean): Promise<void> {
+    const record = this.requireRecord(tabId)
+    await this.transport.send('Runtime.evaluate', {
+      expression: `window.__dshWebdevPicker && window.__dshWebdevPicker.setEnabled(${enabled ? 'true' : 'false'})`,
+      returnByValue: false,
+    }, record.sessionId)
+  }
+
+  /**
    * Navigate one tab and wait for the load to settle.
    * @param tabId - target tab.
    * @param url - absolute or `data:` url.
@@ -576,6 +641,7 @@ export class TabManager {
 
   /** Read the real CSS viewport without changing it in external-browser mode. */
   private async frameViewport(record: TabRecord): Promise<{ width: number; height: number }> {
+    if (record.viewportOverride !== undefined) return record.viewportOverride
     if (this.pinViewports) return this.viewport
     try {
       const metrics = await this.transport.send<{
@@ -712,6 +778,14 @@ export class TabManager {
     const bySession = (sessionId: string | undefined): TabRecord | undefined => {
       return sessionId === undefined ? undefined : this.bySession.get(sessionId)
     }
+
+    this.unsubscribers.push(this.transport.on('Runtime.bindingCalled', (params, sessionId) => {
+      const shaped = params as { name?: unknown; payload?: unknown }
+      if (shaped.name !== PAGE_PICKER_BINDING) return
+      const record = bySession(sessionId)
+      if (record === undefined || typeof shaped.payload !== 'string') return
+      this.onPagePick?.(record.id, shaped.payload)
+    }))
 
     if (this.discoversTargets) {
       this.unsubscribers.push(this.transport.on('Target.targetCreated', params => {

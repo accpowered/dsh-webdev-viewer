@@ -31,6 +31,7 @@
  * element decodes off the main thread and lets CSS own the aspect-ratio fit.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import {
   IconRefreshOutlineRegular,
   StateDot,
@@ -172,7 +173,9 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   const [status, setStatus] = useState<BrowserViewSocketStatus>('connecting')
   const [interact, setInteract] = useState(true)
   const [picking, setPicking] = useState(false)
+  const [pagePickerActive, setPagePickerActive] = useState(false)
   const [picks, setPicks] = useState<ReadonlyArray<BrowserPickedElement>>([])
+  const [hoverPick, setHoverPick] = useState<BrowserPickedElement | null>(null)
   const [pickError, setPickError] = useState<string | null>(null)
   const [pickNotice, setPickNotice] = useState<string | null>(null)
   const socketRef = useRef<BrowserViewSocket | null>(null)
@@ -180,6 +183,8 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   const imageRef = useRef<HTMLImageElement | null>(null)
   const imeRef = useRef<HTMLTextAreaElement | null>(null)
   const pickRequestRef = useRef<string | null>(null)
+  const hoverRequestRef = useRef<string | null>(null)
+  const lastHoverAtRef = useRef(0)
   const frameDataRef = useRef<BrowserViewFrame | null>(null)
   const interactRef = useRef(interact)
   interactRef.current = interact
@@ -209,17 +214,23 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           setError(null)
           setPicks([])
           setPicking(false)
+          setPagePickerActive(false)
           setPickError(null)
           setPickNotice(null)
+          setHoverPick(null)
           pickRequestRef.current = null
+          hoverRequestRef.current = null
         } else if (lastActiveTabRef.current !== next.activeTabId) {
           lastActiveTabRef.current = next.activeTabId
           setFrame(null)
           setPicks([])
           setPicking(false)
+          setPagePickerActive(false)
           setPickError(null)
           setPickNotice(null)
+          setHoverPick(null)
           pickRequestRef.current = null
+          hoverRequestRef.current = null
         }
         setState(next)
       },
@@ -231,18 +242,44 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
         setTraces((current) => [trace, ...current].slice(0, TRACE_LIMIT))
       },
       onPickResult: (result) => {
-        if (result.requestId !== pickRequestRef.current) return
-        pickRequestRef.current = null
-        if (result.error !== undefined) {
-          setPickError(result.error)
+        if (result.requestId.startsWith('page-')) {
+          const element = result.element
+          if (element !== undefined) {
+            setPicks((current) => [...current, element])
+            setPickError(null)
+            setPickNotice(null)
+          } else if (result.error !== undefined) {
+            setPickError(result.error)
+          }
           return
         }
-        const element = result.element
-        if (element !== undefined) {
-          setPicks((current) => [...current, element])
-          setPickError(null)
-          setPickNotice(null)
+        if (result.requestId === pickRequestRef.current) {
+          pickRequestRef.current = null
+          setHoverPick(null)
+          if (result.error !== undefined) {
+            setPickError(result.error)
+            return
+          }
+          const element = result.element
+          if (element !== undefined) {
+            setPicks((current) => [...current, element])
+            setPickError(null)
+            setPickNotice(null)
+          }
+          return
         }
+        if (result.requestId === hoverRequestRef.current) {
+          hoverRequestRef.current = null
+          if (result.error !== undefined) {
+            setHoverPick(null)
+            return
+          }
+          setHoverPick(result.element ?? null)
+        }
+      },
+      onPickMode: (enabled) => {
+        setPagePickerActive(enabled)
+        if (!enabled) setHoverPick(null)
       },
       onError: (code, message) => { setError({ code, message }) },
     })
@@ -316,6 +353,38 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     return () => { host.removeEventListener('wheel', onWheel) }
   }, [frameVisible])
 
+  // Make the page render at the width it is actually displayed at. Without
+  // this the host keeps the browser window's viewport and a ~400px sidebar
+  // scales a desktop page down until the text is unreadable.
+  useEffect(() => {
+    const host = frameHostRef.current
+    if (host === null) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let last = { width: 0, height: 0 }
+    const send = (): void => {
+      const width = Math.round(host.clientWidth)
+      const height = Math.round(host.clientHeight)
+      if (width < 240 || height < 240) return
+      if (Math.abs(width - last.width) < 2 && Math.abs(height - last.height) < 2) return
+      last = { width, height }
+      socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'viewport', width, height })
+    }
+    if (typeof ResizeObserver === 'undefined') {
+      send()
+      return
+    }
+    const observer = new ResizeObserver(() => {
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(send, 120)
+    })
+    observer.observe(host)
+    send()
+    return () => {
+      observer.disconnect()
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }, [frameVisible, state.activeTabId])
+
   const pointOf = (clientX: number, clientY: number): { x: number; y: number } | null => {
     const host = frameHostRef.current
     const current = frameDataRef.current
@@ -349,8 +418,27 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     if (point === null) return
     if (picking) {
       event.preventDefault()
+      if (pagePickerActive) {
+        // The page owns this gesture: its injected picker turns the click into
+        // a binding call that works in the real browser window too.
+        focusIme()
+        event.currentTarget.setPointerCapture(event.pointerId)
+        sendInput({
+          type: 'mouse',
+          action: 'down',
+          x: point.x,
+          y: point.y,
+          button: pointerButton(event),
+          buttons: event.buttons === 0 ? 1 : event.buttons,
+          clickCount: event.detail > 0 ? event.detail : 1,
+          modifiers: modifiersOf(event),
+        })
+        return
+      }
       const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
       pickRequestRef.current = requestId
+      hoverRequestRef.current = null
+      setHoverPick(null)
       setPickError(null)
       setPickNotice(null)
       socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'pick', requestId, x: point.x, y: point.y })
@@ -373,11 +461,44 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   }
 
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>): void => {
-    if (!interact || picking || visibleFrame === null) return
+    if (visibleFrame === null) return
+    if (!interact && !picking) return
+    const point = pointOf(event.clientX, event.clientY)
+    if (picking) {
+      if (pagePickerActive) {
+        const now = Date.now()
+        if (event.buttons === 0 && now - lastPointerMoveRef.current < 16) return
+        lastPointerMoveRef.current = now
+        if (point === null) return
+        sendInput({
+          type: 'mouse',
+          action: 'move',
+          x: point.x,
+          y: point.y,
+          button: 'none',
+          buttons: event.buttons,
+          clickCount: 0,
+          modifiers: modifiersOf(event),
+        })
+        return
+      }
+      // A hover probe is the same element resolution as a pick, but it never
+      // appends to the quote. Throttle it so a mouse sweep is not a CDP flood.
+      const now = Date.now()
+      if (now - lastHoverAtRef.current < 90) return
+      lastHoverAtRef.current = now
+      if (point === null) {
+        setHoverPick(null)
+        return
+      }
+      const requestId = `hover-${now.toString(36)}-${Math.random().toString(36).slice(2)}`
+      hoverRequestRef.current = requestId
+      socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'pick', requestId, x: point.x, y: point.y })
+      return
+    }
     const now = Date.now()
     if (event.buttons === 0 && now - lastPointerMoveRef.current < 16) return
     lastPointerMoveRef.current = now
-    const point = pointOf(event.clientX, event.clientY)
     if (point === null) return
     sendInput({
       type: 'mouse',
@@ -392,7 +513,9 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   }
 
   const onPointerUp = (event: React.PointerEvent<HTMLDivElement>): void => {
-    if (!interact || picking || visibleFrame === null) return
+    if (visibleFrame === null) return
+    if (picking && !pagePickerActive) return
+    if (!picking && !interact) return
     const point = pointOf(event.clientX, event.clientY)
     if (point === null) return
     event.preventDefault()
@@ -441,9 +564,24 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
 
   const clearPicks = (): void => {
     setPicks([])
+    setHoverPick(null)
     setPickError(null)
     setPickNotice(null)
     pickRequestRef.current = null
+    hoverRequestRef.current = null
+  }
+
+  const togglePicking = (): void => {
+    const next = !picking
+    setPicking(next)
+    setPagePickerActive(false)
+    setHoverPick(null)
+    hoverRequestRef.current = null
+    setPickError(null)
+    setPickNotice(null)
+    // Preference: a host that understands pick-mode lets the page own the
+    // gesture. If it does not ack, the panel-side picker remains the fallback.
+    socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'pick-mode', enabled: next })
   }
 
   const sendPicks = (): void => {
@@ -451,8 +589,11 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     const quote = formatPicks(picks, url)
     const accepted = inputActions?.insertQuote(quote)
     if (accepted === true) {
+      socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'pick-mode', enabled: false })
       setPicks([])
       setPicking(false)
+      setPagePickerActive(false)
+      setHoverPick(null)
       setPickError(null)
       setPickNotice(t('panel.pick.sent'))
       return
@@ -470,6 +611,20 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   }
 
   const pickCount = t('panel.pick.count').replace('{count}', String(picks.length))
+
+  /** Map a pick's frame-space box onto the displayed image. */
+  const boxStyle = (pick: BrowserPickedElement): CSSProperties | undefined => {
+    if (visibleFrame === null || pick.box === undefined) return undefined
+    const box = pick.box
+    return {
+      left: `${box.x / visibleFrame.width * 100}%`,
+      top: `${box.y / visibleFrame.height * 100}%`,
+      width: `${box.width / visibleFrame.width * 100}%`,
+      height: `${box.height / visibleFrame.height * 100}%`,
+    }
+  }
+  const hoverStyle = hoverPick === null ? undefined : boxStyle(hoverPick)
+  const pickLabel = (pick: BrowserPickedElement): string => `${pick.tag}${pick.id === undefined ? '' : `#${pick.id}`}`
 
   // The chip beside this tab names the page being streamed, and only this body
   // can know that name. Publishing in an effect keeps render pure; the cleanup
@@ -516,11 +671,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           aria-label={t('panel.toolbar.pick')}
           aria-pressed={picking}
           disabled={activeTab === null}
-          onClick={() => {
-            setPicking((value) => !value)
-            setPickError(null)
-            setPickNotice(null)
-          }}
+          onClick={togglePicking}
         >
           <PickIcon />
         </button>
@@ -620,6 +771,20 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
               height={visibleFrame.height}
               draggable={false}
             />
+            {picking && !pagePickerActive && hoverPick !== null && hoverStyle !== undefined && (
+              <div className={css.hoverBox} style={hoverStyle} aria-hidden="true">
+                <span className={css.hoverLabel}>{pickLabel(hoverPick)}</span>
+              </div>
+            )}
+            {picks.map((pick, index) => {
+              const style = boxStyle(pick)
+              if (style === undefined) return null
+              return (
+                <div key={`${pick.fingerprint}-${index}`} className={css.pickBox} style={style} aria-hidden="true">
+                  <span className={css.pickBadge}>{index + 1}</span>
+                </div>
+              )
+            })}
             <textarea
               ref={imeRef}
               className={css.ime}

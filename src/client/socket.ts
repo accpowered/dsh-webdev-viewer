@@ -62,6 +62,8 @@ export interface BrowserViewSocketHandlers {
   onAction(trace: BrowserActionTrace): void
   /** A pick gesture resolved, or failed, on the host. */
   onPickResult?(result: { requestId: string; element?: BrowserPickedElement; error?: string }): void
+  /** The page-side picker was enabled or disabled. */
+  onPickMode?(enabled: boolean): void
   /** The host reported a failure the panel must show instead of a frame. */
   onError(code: string, message: string): void
 }
@@ -265,6 +267,10 @@ export function parseBrowserViewEvent(value: unknown): BrowserViewEvent | null {
         ...typeof candidate.error === 'string' ? { error: candidate.error } : {},
       }
     }
+    case 'pick-mode': {
+      if (typeof candidate.enabled !== 'boolean') return null
+      return { v: BROWSER_VIEW_API_VERSION, kind: 'pick-mode', enabled: candidate.enabled }
+    }
     case 'error': {
       if (typeof candidate.code !== 'string' || typeof candidate.message !== 'string') return null
       return { v: BROWSER_VIEW_API_VERSION, kind: 'error', code: candidate.code, message: candidate.message }
@@ -353,6 +359,9 @@ export function connectBrowserViewSocket(
         return
       case 'pick-result':
         handlers.onPickResult?.(event)
+        return
+      case 'pick-mode':
+        handlers.onPickMode?.(event.enabled)
         return
       case 'error':
         handlers.onError(event.code, event.message)

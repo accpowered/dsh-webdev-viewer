@@ -47,11 +47,20 @@ import {
   type BrowserConsoleEntry,
   type BrowserNetworkEntry,
   type BrowserPanelState,
+  type BrowserPickedElement,
   type BrowserSnapshot,
   type BrowserTabView,
   type BrowserViewCommand,
   type BrowserViewEvent,
 } from '../core/protocol.ts'
+
+/** Stable short fingerprint for a page-side pick. */
+function fingerprintOf(selector: string, text: string): string {
+  const value = `${selector}|${text}`
+  let hash = 5381
+  for (let index = 0; index < value.length; index++) hash = ((hash << 5) + hash) ^ value.charCodeAt(index)
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
 
 /** One attached panel socket as the service sees it. */
 export interface BrowserViewSink {
@@ -93,6 +102,7 @@ export interface OpenSessionOptions extends BrowserConnectionConfig {
   viewport: { width: number; height: number }
   onFrame: (frame: ScreencastFrame) => void
   onTabsChanged: () => void
+  onPagePick?: (tabId: string, payload: string) => void
 }
 
 /** One running browser plus the tab manager over it. */
@@ -155,6 +165,7 @@ async function openIsolatedSession(options: OpenSessionOptions): Promise<Browser
     viewport: options.viewport,
     onFrame: options.onFrame,
     onTabsChanged: options.onTabsChanged,
+    onPagePick: options.onPagePick,
   })
   return {
     mode: 'isolated',
@@ -220,6 +231,7 @@ export async function openExternalSession(
       discoverTargets: true,
       onFrame: options.onFrame,
       onTabsChanged: options.onTabsChanged,
+      onPagePick: options.onPagePick,
     })
     await tabs.discoverExistingTabs()
     const attachedTabs = tabs
@@ -420,6 +432,22 @@ export class BrowserViewService implements BrowserViewBackend {
           }
           return
         }
+        case 'viewport': {
+          const tabId = this.displayedOrDefault()
+          if (tabId === null) return
+          const tabs = await this.requireTabs()
+          await tabs.setViewport(tabId, command.width, command.height)
+          return
+        }
+        case 'pick-mode': {
+          const tabId = this.displayedOrDefault()
+          if (tabId === null) throw new Error('no page is being watched; open a page first')
+          const tabs = await this.requireTabs()
+          await tabs.installPagePicker(tabId)
+          await tabs.setPagePickerEnabled(tabId, command.enabled)
+          sink.send({ v: 1, kind: 'pick-mode', enabled: command.enabled })
+          return
+        }
         default: {
           const unreachable: never = command
           void unreachable
@@ -428,6 +456,70 @@ export class BrowserViewService implements BrowserViewBackend {
     } catch (error) {
       this.fail('command-failed', error)
     }
+  }
+
+  /**
+   * Turn one page-side picker payload into a panel pick event.
+   *
+   * The page computes the selector and box in its own document; the host adds
+   * the document generation and a fingerprint, then broadcasts the pick to every
+   * attached panel. A malformed payload is dropped rather than failing the
+   * panel that enabled picking.
+   * @param tabId - tab the binding belonged to.
+   * @param payload - JSON string produced by the page picker.
+   */
+  private handlePagePick(tabId: string, payload: string): void {
+    if (this.disposed || this.session === undefined) return
+    let data: Record<string, unknown>
+    try {
+      const parsed = JSON.parse(payload) as unknown
+      if (typeof parsed !== 'object' || parsed === null) return
+      data = parsed as Record<string, unknown>
+    } catch {
+      return
+    }
+    const selector = typeof data.selector === 'string' && data.selector.length > 0 ? data.selector : ''
+    if (selector === '') return
+    const tag = typeof data.tag === 'string' && data.tag.length > 0 ? data.tag.toLowerCase() : 'element'
+    const text = typeof data.text === 'string' ? data.text.slice(0, 600) : undefined
+    const id = typeof data.id === 'string' && data.id.length > 0 ? data.id : undefined
+    const role = typeof data.role === 'string' && data.role.length > 0 ? data.role : undefined
+    const classes = Array.isArray(data.classes)
+      ? data.classes.filter((value): value is string => typeof value === 'string').slice(0, 8)
+      : undefined
+    const note = typeof data.note === 'string' && data.note.length > 0 ? data.note.slice(0, 500) : undefined
+    let box: BrowserPickedElement['box']
+    if (typeof data.rect === 'object' && data.rect !== null) {
+      const rect = data.rect as Record<string, unknown>
+      if (typeof rect.x === 'number' && typeof rect.y === 'number'
+        && typeof rect.w === 'number' && typeof rect.h === 'number') {
+        box = { x: rect.x, y: rect.y, width: rect.w, height: rect.h }
+      }
+    }
+    let pageVersion: number
+    try {
+      pageVersion = this.session.tabs.versionOf(tabId)
+    } catch {
+      return
+    }
+    const element: BrowserPickedElement = {
+      pageVersion,
+      selector,
+      fingerprint: fingerprintOf(selector, text ?? ''),
+      tag,
+      ...id === undefined ? {} : { id },
+      ...classes === undefined || classes.length === 0 ? {} : { classes },
+      ...role === undefined ? {} : { role },
+      ...text === undefined ? {} : { text },
+      ...box === undefined ? {} : { box },
+      ...note === undefined ? {} : { note },
+    }
+    this.broadcast({
+      v: 1,
+      kind: 'pick-result',
+      requestId: `page-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      element,
+    })
   }
 
   /**
@@ -1120,6 +1212,7 @@ export class BrowserViewService implements BrowserViewBackend {
         viewport: this.viewport,
         onFrame: frame => { this.broadcast({ v: 1, kind: 'frame', ...frame }) },
         onTabsChanged: () => { this.broadcast({ v: 1, kind: 'state', state: this.state() }) },
+        onPagePick: (tabId, payload) => { this.handlePagePick(tabId, payload) },
       })
       if (generation !== this.generation || this.disposed) {
         await session.dispose()

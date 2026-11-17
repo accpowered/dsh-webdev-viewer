@@ -16,6 +16,16 @@ This product is planned to include software derived from:
   Copyright (c) the dsh-web contributors
   Licensed under the Apache License, Version 2.0 (see LICENSE).
 
+  dsh-web-preview-panel
+  Package: dsh-web-preview-panel 0.2.4
+  Upstream: https://www.npmjs.com/package/dsh-web-preview-panel/v/0.2.4
+  Copyright (c) 2026 zoumutou
+  Licensed under the MIT License (see LICENSES/dsh-web-preview-panel-MIT.txt).
+  The element-marking CSS, selector builder, and payload shape in
+  src/core/page-picker.ts are adapted from this package. The transport differs:
+  it injects into a real page and returns picks through a CDP binding so they
+  also work from the real browser window.
+
 Modifications by this project are described in UPSTREAM.md. The upstream
 README, AGENTS.md, package.json, and cordis.patch.yml are retained verbatim
 under docs/upstream/ for attribution and reference. This NOTICE is a draft until

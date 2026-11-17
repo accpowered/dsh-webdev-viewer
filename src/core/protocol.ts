@@ -22,7 +22,7 @@ export const BROWSER_VIEW_API_VERSION = 1
 export const BROWSER_VIEW_SOCKET_PATH = '/api/dsh-webdev-viewer/socket'
 
 /** JPEG quality the host asks CDP for; the panel only displays frames. */
-export const DEFAULT_JPEG_QUALITY = 70
+export const DEFAULT_JPEG_QUALITY = 82
 
 /** Viewport the host pins on every tab it creates, in CSS pixels. */
 export const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const
@@ -97,6 +97,7 @@ export type BrowserViewEvent =
       data: string
     }
   | { v: 1; kind: 'action'; trace: BrowserActionTrace }
+  | { v: 1; kind: 'pick-mode'; enabled: boolean }
   | {
       v: 1
       kind: 'pick-result'
@@ -149,6 +150,8 @@ export type BrowserViewCommand =
   | { v: 1; kind: 'close-tab'; tabId: string }
   | { v: 1; kind: 'input'; event: BrowserInputEvent }
   | { v: 1; kind: 'pick'; requestId: string; x: number; y: number }
+  | { v: 1; kind: 'viewport'; width: number; height: number }
+  | { v: 1; kind: 'pick-mode'; enabled: boolean }
 
 /** A console entry the host rang in while the tab was open. */
 export interface BrowserConsoleEntry {
@@ -236,6 +239,8 @@ export interface BrowserPickedElement {
   box?: { x: number; y: number; width: number; height: number }
   /** Best-effort source hint (data-* or framework dev metadata). */
   source?: { file?: string; line?: number; component?: string }
+  /** Optional user annotation from the page-side picker. */
+  note?: string
 }
 
 /** Whether a decoded JSON value is a command this version accepts. */
@@ -258,6 +263,11 @@ export function isBrowserViewCommand(value: unknown): value is BrowserViewComman
       return typeof candidate.requestId === 'string'
         && typeof candidate.x === 'number' && Number.isFinite(candidate.x)
         && typeof candidate.y === 'number' && Number.isFinite(candidate.y)
+    case 'viewport':
+      return typeof candidate.width === 'number' && Number.isFinite(candidate.width) && candidate.width > 0
+        && typeof candidate.height === 'number' && Number.isFinite(candidate.height) && candidate.height > 0
+    case 'pick-mode':
+      return typeof candidate.enabled === 'boolean'
     default:
       return false
   }

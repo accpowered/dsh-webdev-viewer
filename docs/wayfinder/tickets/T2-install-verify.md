@@ -34,8 +34,9 @@ See [`docs/verification/2026-11-17-live.md`](../../verification/2026-11-17-live.
 - Plugin loaded after restart; config entry `include:ui-webdev` present; client slot occupant `dsh-webdev-viewer` active.
 - Real-browser mode attached to a dedicated Edge on port 9222; `webdev_tabs`/`webdev_navigate` work.
 - Agent tools verified: snapshot, type, click, console, screenshot; network/scroll/press not individually exercised.
-- Panel socket smoke test verified `pick-result` and `input` dispatch.
-- Remaining: the user must open the panel and test human pointer/keyboard input, Pick → Add to input, docked-width readability, and latency. Static preview/live reload, runner and Electron are later phases.
+- Panel socket smoke test verified `pick-result`, `input`, `viewport` (390×800 frames) and `pick-mode`.
+- Page-side picker verified: a click in the page returns selector/classes/box and draws `dsh-wvp-hover`/`dsh-wvp-active`; this is the path that makes the **real browser window** a development surface, not only the panel.
+- Remaining: refresh/open the panel and verify its pointer mapping, Pick button, quote insertion, docked readability, and latency. Static preview/live reload, runner and Electron are later phases.
 
 ## Resolution
 

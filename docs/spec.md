@@ -67,7 +67,9 @@ The current wire version stays **v1**. The input and pick commands are additive 
 - `request-frame`
 - `close-tab { tabId }`
 - `input { event }` — one mouse/wheel/key/text event; see §5.
-- `pick { requestId, x, y }` — resolve the element at frame coordinates.
+- `pick { requestId, x, y }` — resolve the element at frame coordinates (panel-side fallback picker).
+- `pick-mode { enabled }` — install/toggle the page-side picker in the displayed tab. The page editor then picks clicks made in the real browser window as well as through the panel.
+- `viewport { width, height }` — render the page at the panel's content size so the frame is 1:1 instead of scaled.
 - `style { requestId, action: 'set' | 'reset' | 'reset-all', ref?, selector?, property?, value? }` — temporary style override (P4, not implemented yet).
 - `preview`/`run`/`stop` remain agent tools for now; the panel's actions will call the same Host methods. **TBD** whether they need panel commands.
 
@@ -78,6 +80,7 @@ The current wire version stays **v1**. The input and pick commands are additive 
 - `frame { tabId, seq, width, height, data }` — base64 JPEG; latest-frame-wins.
 - `action { trace }` — one-line agent action.
 - `pick-result { requestId, element?, error? }` — element metadata; see §6.
+- `pick-mode { enabled }` — acknowledgement that the page-side picker is on/off.
 - `style-state { requestId, properties, applied }` — computed/applied values (P4, not implemented yet).
 - `logs { runId, stream: 'stdout' | 'stderr', text, at }` (runner/Electron, not implemented yet)
 - `error { code, message }`
@@ -123,7 +126,7 @@ interface PickedElement {
 - The Host resolves the element with `DOM.getNodeForLocation` + `Runtime.evaluate`; source hints are best-effort (`data-source`, React `_debugSource`, Vue component info).
 - **Staleness is contractual**: if `pageVersion` changed, re-resolve by fingerprint; if exactly one match, rebind; otherwise mark stale and require a re-pick. Never send a bare selector without the fingerprint/page version.
 - Multi-select keeps a list of picks; each has its own note.
-- **P1 implementation status**: the panel keeps a multi-pick list, shows a pick bar with send/clear, and inserts the formatted quote through `inputActions.insertQuote`; the clipboard is the fallback when no composer seat is present. Per-pick notes, Explain/Change chips, and `viewer_pick_request` are not implemented yet.
+- **P1 implementation status**: the panel keeps a multi-pick list, shows a pick bar with send/clear, and inserts the formatted quote through `inputActions.insertQuote`; the clipboard is the fallback when no composer seat is present. The page-side picker (adapted from the MIT `dsh-web-preview-panel` marking code) is toggled by `pick-mode`, draws hover/active outlines in the page, and sends picks from the **real browser window** through a CDP binding. Per-pick notes and Explain/Change chips are not implemented yet.
 - Quote: `inputActions.insertQuote(text, summary)`; if it returns `false`, show an error (draft changed/locked) and keep the picks. The quote includes page URL, page version, each element's label/selector/fingerprint/box/source, and the user's note. It is **not auto-sent**.
 - **Explain/Change chips** (R6, v1 small set): `Explain this` inserts a read-only-intent quote; `Change…` pre-fills a change request. The read-only badge is derived from the tools the agent actually called, not from which chip was pressed. A v2 `viewer_pick_request` lets the agent ask the user to pick.
 

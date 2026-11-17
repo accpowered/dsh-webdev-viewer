@@ -17,6 +17,17 @@ describe('panel protocol additions', () => {
       x: 10,
       y: 20,
     })).toBe(true)
+    expect(isBrowserViewCommand({
+      v: BROWSER_VIEW_API_VERSION,
+      kind: 'viewport',
+      width: 390,
+      height: 800,
+    })).toBe(true)
+    expect(isBrowserViewCommand({
+      v: BROWSER_VIEW_API_VERSION,
+      kind: 'pick-mode',
+      enabled: true,
+    })).toBe(true)
   })
 
   it('rejects malformed or foreign-version commands', () => {
@@ -33,6 +44,17 @@ describe('panel protocol additions', () => {
       y: 20,
     })).toBe(false)
     expect(isBrowserViewCommand({ v: BROWSER_VIEW_API_VERSION, kind: 'input' })).toBe(false)
+    expect(isBrowserViewCommand({
+      v: BROWSER_VIEW_API_VERSION,
+      kind: 'pick-mode',
+      enabled: 'yes',
+    })).toBe(false)
+    expect(isBrowserViewCommand({
+      v: BROWSER_VIEW_API_VERSION,
+      kind: 'viewport',
+      width: 0,
+      height: 800,
+    })).toBe(false)
   })
 
   it('validates the input event variants', () => {

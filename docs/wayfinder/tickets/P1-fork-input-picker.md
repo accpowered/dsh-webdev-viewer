@@ -45,8 +45,9 @@ If input forwarding or picker insertion is impractical, the architecture changes
 - Added additive v1 protocol commands `input` and `pick`, and the `pick-result` event, with validators.
 - Added `src/core/input.ts` (mouse/wheel/key/text via the same CDP primitives the agent actions use) and `src/core/pick.ts` (element-at-point, selector, fingerprint, box, source hints, page version).
 - Added panel Interact/Watch and Pick toggles, pointer/wheel/key/paste/IME input, a hidden IME textarea, a multi-pick bar, and `inputActions.insertQuote` with a clipboard fallback.
-- `pnpm typecheck` and `pnpm build` pass; the new protocol test passes (`tests/core/protocol.spec.ts`).
-- **Not yet verified in the running DSH**: the installed bundle still needs a DSH restart (`package-moved`). The next step is live verification of click/type/scroll/pick→quote, then latency measurement and the geometry decision.
+- Added `viewport` and `pick-mode`. The panel sizes the page viewport to its content box (sharp 1:1 frame) and the page-side picker, adapted from the MIT `dsh-web-preview-panel` marking code, lets a click in the **real browser window** become a pick through a CDP binding.
+- `pnpm typecheck` and `pnpm build` pass; the protocol test passes (`tests/core/protocol.spec.ts`).
+- Live-verified: real-browser attach, agent tools, panel socket `pick`, `input`, `viewport` (390×800 frames), and page-side pick (`pick-result` with selector/classes/box). The panel's own pointer/pick/quote path still needs the user's visual confirmation after refreshing the DSH page.
 
 ## Resolution
 
