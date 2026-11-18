@@ -42,6 +42,12 @@ describe('panel protocol additions', () => {
     expect(isBrowserViewCommand({ v: BROWSER_VIEW_API_VERSION, kind: 'use-configured' })).toBe(true)
     expect(isBrowserViewCommand({
       v: BROWSER_VIEW_API_VERSION,
+      kind: 'style-preview',
+      keys: ['self|#est_cn||border-radius'],
+    })).toBe(true)
+    expect(isBrowserViewCommand({ v: BROWSER_VIEW_API_VERSION, kind: 'preview-reset' })).toBe(true)
+    expect(isBrowserViewCommand({
+      v: BROWSER_VIEW_API_VERSION,
       kind: 'pick-mode',
       enabled: true,
     })).toBe(true)
@@ -85,6 +91,11 @@ describe('panel protocol additions', () => {
       width: 800,
       height: 600,
       deviceScaleFactor: Number.NaN,
+    })).toBe(false)
+    expect(isBrowserViewCommand({
+      v: BROWSER_VIEW_API_VERSION,
+      kind: 'style-preview',
+      keys: [1],
     })).toBe(false)
   })
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The panel shows a blue **Preview** chip in the status row whenever temporary style overrides are applied to the visible page (agent `webdev_desktop_style` or the panel's own style inspector). The host state carries `preview { active, count }`, the connection state stays `Live`, and a reload/navigation/reset/detach clears it; the wire gains `style-preview` and `preview-reset` commands.
+- `webdev_desktop_style` gains `relation: "self" | "parent"`, `pseudo: "::before" | "::after"`, and `action: "inspect"`, which probes the element, its parent and both pseudo-elements so a composite widget can be diagnosed and changed on the layer that really draws it. Pseudo overrides use one marked stylesheet rule (removed on reset/reload); inline overrides stay inline.
+- Tests: 239 Host/core tests pass; `pnpm typecheck`, `build` and `pack` pass.
+
 ## v0.1.2 (2026-11-18)
 
 - Real-browser failures are classified once in the host: `webdev.real_browser_unavailable` with `endpoint`, `reason` (`econnrefused`, `not_cdp`, `spawn_denied`, `not_installed`, `timeout`, `unknown`), `remediation`, and the underlying text; tool errors carry the same fields as JSON and `/api/dsh-webdev-viewer/state` exposes `lastError { code, message, at, reason, endpoint, remediation, detail }` plus `attempts`.

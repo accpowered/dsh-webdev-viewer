@@ -182,6 +182,28 @@
   color: var(--dsw-alias-label-secondary);
 }
 
+/* Temporary style overrides: a blue chip next to the connection state, never a
+   replacement for it — the page is still Live; its document is just unsaved. */
+.previewChip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  color: var(--dsw-alias-brand-primary);
+  font: var(--dsw-font-xxxs-11);
+  line-height: 16px;
+  border: 0.5px solid var(--dsw-alias-brand-primary);
+  border-radius: 8px;
+}
+
+.previewDot {
+  width: 6px;
+  height: 6px;
+  background: var(--dsw-alias-brand-primary);
+  border-radius: 50%;
+}
+
 /* The mode chip doubles as the way back to the configured source when a
    person explicitly opened the isolated browser instead. */
 .modeAction {

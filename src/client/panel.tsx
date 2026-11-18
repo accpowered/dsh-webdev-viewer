@@ -249,6 +249,10 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
    * disconnect, which is exactly the moment the tabs list goes empty.
    */
   const lastPageUrlRef = useRef('')
+  /** Temporary style overrides this panel applied; the host counts the union. */
+  const previewKeysRef = useRef<Set<string>>(new Set())
+  /** The panel asks the host to clear stale preview keys once per mount. */
+  const previewResetSentRef = useRef(false)
 
   const factory = useMemo<BrowserViewSocketFactory>(
     () => socketFactory ?? ((handlers) => connectBrowserViewSocket(handlers, { location, sessionId })),
@@ -787,6 +791,18 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     }
   }
 
+  // One key per temporary override, in the same shape the host builds for the
+  // agent tool, so the Preview count is a union rather than two writers.
+  const previewKeyOf = (selector: string, property: string): string => `self|${selector}||${property}`
+
+  const reportPreview = (): void => {
+    socketRef.current?.send({
+      v: BROWSER_VIEW_API_VERSION,
+      kind: 'style-preview',
+      keys: [...previewKeysRef.current],
+    })
+  }
+
   const setStyle = (property: string, value: string): void => {
     if (!nativeActive || lastPick === undefined) return
     setStyleValues((current) => ({ ...current, [property]: value }))
@@ -795,6 +811,9 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
       selector: lastPick.selector,
       property,
       value,
+    }).then(() => {
+      previewKeysRef.current.add(previewKeyOf(lastPick.selector, property))
+      reportPreview()
     }).catch((error: unknown) => {
       setStyleError(error instanceof Error ? error.message : String(error))
     })
@@ -807,6 +826,9 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     void nativeRef.current?.request('style-reset', {
       selector: lastPick.selector,
       property,
+    }).then(() => {
+      previewKeysRef.current.delete(previewKeyOf(lastPick.selector, property))
+      reportPreview()
     }).catch((error: unknown) => {
       setStyleError(error instanceof Error ? error.message : String(error))
     })
@@ -923,6 +945,12 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   useEffect(() => {
     if (!nativeActive || status !== 'open') return
     socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'native-attach', sessionId })
+    // A freshly mounted panel starts on a fresh guest: any preview keys left in
+    // the host from a previous client belong to a document that no longer exists.
+    if (!previewResetSentRef.current) {
+      previewResetSentRef.current = true
+      socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'preview-reset' })
+    }
     return () => { socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'native-detach' }) }
   }, [nativeActive, status, sessionId])
 
@@ -1049,6 +1077,16 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           ) : (
             <span className={css.mode}>{modeLabel}</span>
           ))}
+          {state.preview?.active === true && (
+            <span
+              className={css.previewChip}
+              title={t('panel.preview.hint')}
+              data-dsh-part={BROWSER_VIEW_PARTS.preview}
+            >
+              <span className={css.previewDot} aria-hidden="true" />
+              <span>{t('panel.preview')}</span>
+            </span>
+          )}
           {!nativeActive && visibleFrame !== null && (
             <span className={css.frameSize} title={t('panel.toolbar.frameHint')}>
               {visibleFrame.width}×{visibleFrame.height} · PNG
@@ -1179,6 +1217,12 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
               picking={picking}
               onUrl={(next) => { setNativeUrl(next); setNativeAddress(next) }}
               onTitle={(next) => { setNativeTitle(next) }}
+              onNavigated={() => {
+                // A real document load discarded every inline/stylesheet override.
+                previewKeysRef.current.clear()
+                setStyleOpen(false)
+                socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'preview-reset' })
+              }}
               onLoading={(next) => { setNativeLoading(next) }}
               onPick={(element) => {
                 setPicks((current) => [...current, element])

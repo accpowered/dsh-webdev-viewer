@@ -82,6 +82,8 @@ export interface NativeBrowserProps {
   picking: boolean
   onUrl?(url: string): void
   onTitle?(title: string): void
+  /** A new top-level document loaded (navigation or reload). */
+  onNavigated?(): void
   onLoading?(loading: boolean): void
   onPick?(element: BrowserPickedElement): void
   onConsole?(entry: { level: number; message: string }): void
@@ -308,17 +310,26 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
       case 'style-get': {
         const selector = typeof input.selector === 'string' ? input.selector : ''
         const properties = Array.isArray(input.properties) ? input.properties.filter((item): item is string => typeof item === 'string') : []
+        const relation = input.relation === 'parent' ? 'parent' : 'self'
+        const pseudo = input.pseudo === '::before' || input.pseudo === '::after' ? input.pseudo : ''
         const value = await element.executeJavaScript(`(() => {
           const el = document.querySelector(${JSON.stringify(selector)});
           if (el === null) return null;
-          const computed = getComputedStyle(el);
+          const target = ${JSON.stringify(relation)} === 'parent' ? el.parentElement : el;
+          if (target === null) return null;
+          const pseudo = ${JSON.stringify(pseudo)};
+          const computed = pseudo === '' ? getComputedStyle(target) : getComputedStyle(target, pseudo);
           const result = {};
           for (const property of ${JSON.stringify(properties)}) {
-            result[property] = el.style.getPropertyValue(property) || computed.getPropertyValue(property);
+            let value = computed.getPropertyValue(property);
+            if (pseudo === '' && target.style.getPropertyValue(property) !== '') {
+              value = target.style.getPropertyValue(property);
+            }
+            result[property] = value;
           }
           return result;
         })()`) as Record<string, unknown> | null
-        if (value === null) throw new Error('the picked element no longer exists in the page')
+        if (value === null) throw new Error('the picked element (or its parent) no longer exists in the page')
         const result: Record<string, string> = {}
         for (const [key, item] of Object.entries(value)) if (typeof item === 'string') result[key] = item
         return result
@@ -327,11 +338,36 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
         const selector = typeof input.selector === 'string' ? input.selector : ''
         const property = typeof input.property === 'string' ? input.property : ''
         const value = typeof input.value === 'string' ? input.value : ''
+        const relation = input.relation === 'parent' ? 'parent' : 'self'
+        const pseudo = input.pseudo === '::before' || input.pseudo === '::after' ? input.pseudo : ''
         if (selector === '' || property === '') throw new Error('style-set needs selector and property')
         await element.executeJavaScript(`(() => {
           const el = document.querySelector(${JSON.stringify(selector)});
           if (el === null) throw new Error('element is missing');
-          el.style.setProperty(${JSON.stringify(property)}, ${JSON.stringify(value)});
+          const target = ${JSON.stringify(relation)} === 'parent' ? el.parentElement : el;
+          if (target === null) throw new Error('the parent element is missing');
+          const pseudo = ${JSON.stringify(pseudo)};
+          const property = ${JSON.stringify(property)};
+          const value = ${JSON.stringify(value)};
+          if (pseudo === '') { target.style.setProperty(property, value); return true; }
+          // A pseudo-element cannot carry an inline style: use one marked
+          // stylesheet whose rules this page keeps in memory, so Reset and a
+          // reload both discard the override with the document.
+          if (/[}<]/.test(value)) throw new Error('value contains a stylesheet-breaking character');
+          const state = window.__dshWebdevPreviewState
+            || (window.__dshWebdevPreviewState = { rules: new Map(), counter: 0, styleEl: null });
+          let marker = target.getAttribute('data-dsh-webdev-preview');
+          if (marker === null) { marker = 'p' + (++state.counter); target.setAttribute('data-dsh-webdev-preview', marker); }
+          state.rules.set(marker + '|' + pseudo + '|' + property, { marker, pseudo, property, value });
+          const render = () => [...state.rules.values()]
+            .map(r => '[data-dsh-webdev-preview="' + r.marker + '"]' + r.pseudo + '{' + r.property + ':' + r.value + ' !important;}')
+            .join('\\n');
+          if (state.styleEl === null || !state.styleEl.isConnected) {
+            state.styleEl = document.createElement('style');
+            state.styleEl.setAttribute('data-dsh-webdev-preview-style', '');
+            document.head.appendChild(state.styleEl);
+          }
+          state.styleEl.textContent = render();
           return true;
         })()`)
         return { ok: true }
@@ -339,11 +375,34 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
       case 'style-reset': {
         const selector = typeof input.selector === 'string' ? input.selector : ''
         const property = typeof input.property === 'string' ? input.property : ''
+        const relation = input.relation === 'parent' ? 'parent' : 'self'
+        const pseudo = input.pseudo === '::before' || input.pseudo === '::after' ? input.pseudo : ''
         if (selector === '' || property === '') throw new Error('style-reset needs selector and property')
         await element.executeJavaScript(`(() => {
           const el = document.querySelector(${JSON.stringify(selector)});
           if (el === null) throw new Error('element is missing');
-          el.style.removeProperty(${JSON.stringify(property)});
+          const target = ${JSON.stringify(relation)} === 'parent' ? el.parentElement : el;
+          if (target === null) throw new Error('the parent element is missing');
+          const pseudo = ${JSON.stringify(pseudo)};
+          const property = ${JSON.stringify(property)};
+          if (pseudo === '') { target.style.removeProperty(property); return true; }
+          const state = window.__dshWebdevPreviewState;
+          if (state === undefined) return true;
+          const marker = target.getAttribute('data-dsh-webdev-preview');
+          if (marker === null) return true;
+          state.rules.delete(marker + '|' + pseudo + '|' + property);
+          const remaining = [...state.rules.values()];
+          if (!remaining.some(r => r.marker === marker)) target.removeAttribute('data-dsh-webdev-preview');
+          if (remaining.length === 0) {
+            if (state.styleEl) state.styleEl.remove();
+            state.styleEl = null;
+            return true;
+          }
+          if (state.styleEl) {
+            state.styleEl.textContent = remaining
+              .map(r => '[data-dsh-webdev-preview="' + r.marker + '"]' + r.pseudo + '{' + r.property + ':' + r.value + ' !important;}')
+              .join('\\n');
+          }
           return true;
         })()`)
         return { ok: true }
@@ -412,6 +471,8 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
       tag.addEventListener('did-navigate', () => {
         propsRef.current.onUrl?.(tag.getURL())
         propsRef.current.onTitle?.(tag.getTitle())
+        // A new top-level document: every temporary style override is gone.
+        propsRef.current.onNavigated?.()
       }, { signal })
       tag.addEventListener('did-navigate-in-page', (event) => {
         if ((event as NavigationEvent).isMainFrame !== false) {

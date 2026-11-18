@@ -33,6 +33,8 @@ export const BROWSER_VIEW_PARTS = {
   pickBar: 'pick-bar',
   /** Connection state marker in the toolbar. */
   status: 'status',
+  /** Temporary style-override marker beside the status. */
+  preview: 'preview',
   /** No-frame placeholder. */
   empty: 'empty',
   /** Host-reported failure placeholder. */

@@ -41,6 +41,25 @@ const DEFAULT_STYLE_PROPERTIES = [
   'border-radius',
 ] as const
 
+/** Properties one `inspect` call probes on every candidate layer. */
+const STYLE_INSPECT_PROPERTIES = [
+  'border-radius',
+  'background-color',
+  'background-image',
+  'box-shadow',
+  'border',
+  'padding',
+  'position',
+] as const
+
+/** The four layers a composite widget can draw itself with. */
+const STYLE_LAYERS = [
+  { layer: 'self', relation: 'self' as const, pseudo: undefined },
+  { layer: 'parent', relation: 'parent' as const, pseudo: undefined },
+  { layer: '::before', relation: 'self' as const, pseudo: '::before' as const },
+  { layer: '::after', relation: 'self' as const, pseudo: '::after' as const },
+] as const
+
 /** One snapshot node, mirroring the wire contract. */
 const SNAPSHOT_NODE_SCHEMA = {
   type: 'object',
@@ -299,12 +318,12 @@ export function createDesktopTools(deps: DesktopToolDeps): ToolDefinition[] {
 
   const style = defineTool({
     name: 'webdev_desktop_style',
-    description: 'Change one element\'s style in the desktop webview the user is looking at, live, and report the before/after values. '
-      + 'This is a temporary preview: it writes an inline style on this page instance only, never edits a source file, and a reload or navigation discards it. '
-      + 'Use it to demonstrate a visual fix (border-radius, color, spacing, padding) before the user decides on a source change; the panel\'s own style inspector does the same thing for the six common properties. '
-      + 'action=get reads the authored inline value when one exists, otherwise the computed value. action=reset removes the inline property again. '
-      + 'Take the selector from the element the user picked, or from webdev_desktop_snapshot. '
-      + '中文触发词：改样式看看、临时样式、圆角、颜色预览、前端效果调试。',
+    description: 'Inspect or change styles in the desktop webview the user is looking at, live, and report the values. '
+      + 'This is a temporary preview: inline styles or a marked stylesheet rule on this page instance only, never a source edit, and a reload or navigation discards it. '
+      + 'Use action=inspect first when a composite widget does not respond to a change on the element itself: it reports the values of the element, its parent, and its ::before/::after layers, so you can see which layer draws the visual. '
+      + 'Then set/reset that layer with relation="parent" and/or pseudo="::before"|"::after". action=get reads a layer without changing it. '
+      + 'Take the selector from the element the user picked or from webdev_desktop_snapshot. '
+      + '中文触发词：改样式看看、临时样式、圆角、颜色预览、前端效果调试、检查伪元素。',
     parameters: {
       selector: {
         type: 'string',
@@ -313,8 +332,18 @@ export function createDesktopTools(deps: DesktopToolDeps): ToolDefinition[] {
       },
       action: {
         type: 'string',
-        enum: ['get', 'set', 'reset'],
-        description: 'Operation. Defaults to set when value is given, otherwise get.',
+        enum: ['get', 'set', 'reset', 'inspect'],
+        description: 'Operation. Defaults to set when value is given, otherwise get. inspect probes self, parent, ::before and ::after.',
+      },
+      relation: {
+        type: 'string',
+        enum: ['self', 'parent'],
+        description: 'Which element to target: the picked element (default) or its parent.',
+      },
+      pseudo: {
+        type: 'string',
+        enum: ['none', '::before', '::after'],
+        description: 'Pseudo-element of the resolved element to target; none means the element itself.',
       },
       property: { type: 'string', description: 'CSS property to set/reset/get, e.g. border-radius, color, padding.' },
       value: { type: 'string', description: 'CSS value for set, e.g. "0" or "#ff0000".' },
@@ -331,6 +360,8 @@ export function createDesktopTools(deps: DesktopToolDeps): ToolDefinition[] {
         properties: {
           selector: { type: 'string', required: true },
           action: { type: 'string', required: true },
+          relation: { type: 'string' },
+          pseudo: { type: 'string' },
           property: { type: 'string' },
           value: { type: 'string' },
           before: { type: 'string' },
@@ -346,6 +377,28 @@ export function createDesktopTools(deps: DesktopToolDeps): ToolDefinition[] {
               },
             },
           },
+          layers: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                layer: { type: 'string', required: true },
+                values: {
+                  type: 'array',
+                  required: true,
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      property: { type: 'string', required: true },
+                      value: { type: 'string', required: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
           temporary: { type: 'boolean', required: true, description: 'Always true: the override lives on the page instance only and a reload discards it.' },
           summary: { type: 'string', required: true },
         },
@@ -356,49 +409,90 @@ export function createDesktopTools(deps: DesktopToolDeps): ToolDefinition[] {
       const selector = args.selector.trim()
       if (selector === '') throw new Error('webdev_desktop_style needs a selector')
       const action = args.action ?? (args.value === undefined ? 'get' : 'set')
+      const relation = args.relation === 'parent' ? 'parent' as const : 'self' as const
+      const pseudo = args.pseudo === '::before' || args.pseudo === '::after' ? args.pseudo : undefined
+      const options = {
+        ...relation === 'parent' ? { relation } : {},
+        ...pseudo === undefined ? {} : { pseudo },
+      }
+      if (action === 'inspect') {
+        const layers: Array<{ layer: string; values: Array<{ property: string; value: string }> }> = []
+        for (const layer of STYLE_LAYERS) {
+          try {
+            const values = await service.nativeStyle(selector, STYLE_INSPECT_PROPERTIES, {
+              ...layer.relation === 'parent' ? { relation: layer.relation } : {},
+              ...layer.pseudo === undefined ? {} : { pseudo: layer.pseudo },
+            })
+            layers.push({
+              layer: layer.layer,
+              values: STYLE_INSPECT_PROPERTIES.map(property => ({ property, value: values[property] ?? '' })),
+            })
+          } catch {
+            // A missing parent or a detached element is a layer with no answer,
+            // not a reason to fail the whole inspection.
+            layers.push({ layer: layer.layer, values: [] })
+          }
+        }
+        return {
+          selector,
+          action,
+          relation,
+          ...pseudo === undefined ? {} : { pseudo },
+          layers,
+          temporary: true,
+          summary: `Inspected self/parent/::before/::after of ${selector} in the desktop view`,
+        }
+      }
       if (action === 'get') {
         const properties = args.properties !== undefined && args.properties.length > 0
           ? args.properties
           : [...DEFAULT_STYLE_PROPERTIES]
-        const values = await service.nativeStyle(selector, properties)
+        const values = await service.nativeStyle(selector, properties, options)
         return {
           selector,
           action,
+          relation,
+          ...pseudo === undefined ? {} : { pseudo },
           values: properties.map(property => ({ property, value: values[property] ?? '' })),
           temporary: true,
-          summary: `Read ${properties.length} style value(s) of ${selector} in the desktop view`,
+          summary: `Read ${properties.length} style value(s) of ${selector}${pseudo ?? ''}${relation === 'parent' ? ' (parent)' : ''} in the desktop view`,
         }
       }
       const property = args.property?.trim()
       if (property === undefined || property === '') {
         throw new Error(`webdev_desktop_style ${action} needs a CSS property`)
       }
-      const before = (await service.nativeStyle(selector, [property]))[property] ?? ''
+      const layer = `${relation === 'parent' ? 'parent ' : ''}${selector}${pseudo ?? ''}`
+      const before = (await service.nativeStyle(selector, [property], options))[property] ?? ''
       if (action === 'set') {
         if (args.value === undefined) throw new Error('webdev_desktop_style set needs a value')
-        await service.nativeStyleSet(selector, property, args.value)
-        const after = (await service.nativeStyle(selector, [property]))[property] ?? ''
+        await service.nativeStyleSet(selector, property, args.value, options)
+        const after = (await service.nativeStyle(selector, [property], options))[property] ?? ''
         return {
           selector,
           action,
+          relation,
+          ...pseudo === undefined ? {} : { pseudo },
           property,
           value: args.value,
           before,
           after,
           temporary: true,
-          summary: `${property}: ${before === '' ? '(none)' : before} -> ${after === '' ? '(none)' : after} on ${selector} (temporary preview, not saved)`,
+          summary: `${property}: ${before === '' ? '(none)' : before} -> ${after === '' ? '(none)' : after} on ${layer} (temporary preview, not saved)`,
         }
       }
-      await service.nativeStyleReset(selector, property)
-      const after = (await service.nativeStyle(selector, [property]))[property] ?? ''
+      await service.nativeStyleReset(selector, property, options)
+      const after = (await service.nativeStyle(selector, [property], options))[property] ?? ''
       return {
         selector,
         action,
+        relation,
+        ...pseudo === undefined ? {} : { pseudo },
         property,
         before,
         after,
         temporary: true,
-        summary: `reset ${property}: ${before === '' ? '(none)' : before} -> ${after === '' ? '(stylesheet value)' : after} on ${selector} (temporary preview)`,
+        summary: `reset ${property}: ${before === '' ? '(none)' : before} -> ${after === '' ? '(stylesheet value)' : after} on ${layer} (temporary preview)`,
       }
     },
   })

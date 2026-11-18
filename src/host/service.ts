@@ -401,6 +401,14 @@ function openConfiguredSession(options: OpenSessionOptions): Promise<BrowserSess
   return options.mode === 'cdp' ? openExternalSession(options) : openIsolatedSession(options)
 }
 
+/** Which element layer one native style operation targets. */
+export interface NativeStyleTargetOptions {
+  /** Follow the picked element's parent instead of itself. @default 'self' */
+  relation?: 'self' | 'parent'
+  /** Target a pseudo-element of the resolved element. */
+  pseudo?: '::before' | '::after'
+}
+
 /**
  * The plugin's single browser service.
  */
@@ -441,6 +449,10 @@ export class BrowserViewService implements BrowserViewBackend {
   private nativeSink: BrowserViewSink | undefined
   /** Session that attached the native guest, when known. */
   private nativeSessionId: string | undefined
+  /** Temporary style keys written by the agent tool. */
+  private readonly agentPreviewKeys = new Set<string>()
+  /** Temporary style keys the panel's own style inspector reported. */
+  private readonly panelPreviewKeys = new Set<string>()
   /** One in-flight Host -> native-guest request per panel. */
   private readonly nativePending = new Map<string, {
     resolve: (value: unknown) => void
@@ -545,7 +557,26 @@ export class BrowserViewService implements BrowserViewBackend {
       state.message = this.lastFailure.message
     }
     if (this.failedAttempts > 0) state.attempts = this.failedAttempts
+    const previewCount = this.previewKeyCount()
+    if (previewCount > 0) state.preview = { active: true, count: previewCount }
     return state
+  }
+
+  /**
+   * Number of temporary style overrides currently applied to the native page.
+   * @returns the merged agent + panel key count.
+   */
+  private previewKeyCount(): number {
+    const merged = new Set<string>([...this.agentPreviewKeys, ...this.panelPreviewKeys])
+    return merged.size
+  }
+
+  /** Drop every temporary-style key and tell the panels the document is clean. */
+  private clearPreview(): void {
+    if (this.agentPreviewKeys.size === 0 && this.panelPreviewKeys.size === 0) return
+    this.agentPreviewKeys.clear()
+    this.panelPreviewKeys.clear()
+    if (!this.disposed) this.broadcast({ v: 1, kind: 'state', state: this.state() })
   }
 
   /**
@@ -683,6 +714,16 @@ export class BrowserViewService implements BrowserViewBackend {
         }
         case 'use-configured': {
           await this.useConfigured()
+          return
+        }
+        case 'style-preview': {
+          this.panelPreviewKeys.clear()
+          for (const key of command.keys) this.panelPreviewKeys.add(key)
+          this.broadcast({ v: 1, kind: 'state', state: this.state() })
+          return
+        }
+        case 'preview-reset': {
+          this.clearPreview()
           return
         }
         case 'native-attach': {
@@ -827,6 +868,11 @@ export class BrowserViewService implements BrowserViewBackend {
     }
     this.nativeSink = undefined
     this.nativeSessionId = undefined
+    // The guest this preview belonged to is gone; the temporary overrides went
+    // with its document, so the Preview chip must not outlive it.
+    this.agentPreviewKeys.clear()
+    this.panelPreviewKeys.clear()
+    if (!this.disposed) this.broadcast({ v: 1, kind: 'state', state: this.state() })
   }
 
   /**
@@ -971,16 +1017,25 @@ export class BrowserViewService implements BrowserViewBackend {
   }
 
   /**
-   * Read style values for one element in the native guest.
+   * Read style values for one element layer in the native guest.
    *
    * The panel answers with the authored inline value when the element has one,
    * otherwise with the computed value — the same value its style panel shows.
    * @param selector - CSS selector of the element.
    * @param properties - CSS properties to read, in order.
+   * @param options - follow the parent element and/or read a pseudo-element.
    * @returns property to value, as the page reported it.
    */
-  async nativeStyle(selector: string, properties: readonly string[]): Promise<Record<string, string>> {
-    const raw = await this.nativeRequest('style-get', { selector, properties: [...properties] })
+  async nativeStyle(
+    selector: string,
+    properties: readonly string[],
+    options: NativeStyleTargetOptions = {},
+  ): Promise<Record<string, string>> {
+    const raw = await this.nativeRequest('style-get', {
+      selector,
+      properties: [...properties],
+      ...options,
+    })
     if (typeof raw !== 'object' || raw === null) throw new Error('the desktop page did not return style values')
     const values: Record<string, string> = {}
     for (const [property, value] of Object.entries(raw as Record<string, unknown>)) {
@@ -990,29 +1045,57 @@ export class BrowserViewService implements BrowserViewBackend {
   }
 
   /**
-   * Apply one temporary inline style in the native guest.
+   * Apply one temporary style in the native guest.
    *
-   * This is the same `element.style.setProperty` the panel's style inspector
-   * uses: the live page changes, no source file is touched, and a reload or
+   * Inline styles cover the element itself; a pseudo-element override is
+   * written as a marked stylesheet rule by the panel. Both are runtime-only:
+   * the live page changes, no source file is touched, and a reload or
    * navigation discards it.
    * @param selector - CSS selector of the element.
    * @param property - CSS property.
    * @param value - CSS value.
+   * @param options - follow the parent element and/or target a pseudo-element.
    */
-  async nativeStyleSet(selector: string, property: string, value: string): Promise<void> {
-    await this.nativeRequest('style-set', { selector, property, value })
+  async nativeStyleSet(
+    selector: string,
+    property: string,
+    value: string,
+    options: NativeStyleTargetOptions = {},
+  ): Promise<void> {
+    await this.nativeRequest('style-set', { selector, property, value, ...options })
+    this.agentPreviewKeys.add(this.previewKeyOf(selector, property, options))
+    this.broadcast({ v: 1, kind: 'state', state: this.state() })
   }
 
   /**
-   * Drop one temporary inline style again in the native guest.
+   * Drop one temporary style again in the native guest.
    *
    * Removing the inline property reveals whatever the page's own stylesheet
-   * says, which is what the panel's Reset does.
+   * says, which is what the panel's Reset does; a pseudo-element rule is
+   * removed from the marked stylesheet.
    * @param selector - CSS selector of the element.
    * @param property - CSS property.
+   * @param options - follow the parent element and/or target a pseudo-element.
    */
-  async nativeStyleReset(selector: string, property: string): Promise<void> {
-    await this.nativeRequest('style-reset', { selector, property })
+  async nativeStyleReset(
+    selector: string,
+    property: string,
+    options: NativeStyleTargetOptions = {},
+  ): Promise<void> {
+    await this.nativeRequest('style-reset', { selector, property, ...options })
+    this.agentPreviewKeys.delete(this.previewKeyOf(selector, property, options))
+    this.broadcast({ v: 1, kind: 'state', state: this.state() })
+  }
+
+  /**
+   * Stable key for one temporary override, shared with the panel's own keys.
+   * @param selector - CSS selector.
+   * @param property - CSS property.
+   * @param options - target layer.
+   * @returns the key the Preview state counts.
+   */
+  private previewKeyOf(selector: string, property: string, options: NativeStyleTargetOptions): string {
+    return `${options.relation ?? 'self'}|${selector}|${options.pseudo ?? ''}|${property}`
   }
 
   /**
@@ -1586,6 +1669,8 @@ export class BrowserViewService implements BrowserViewBackend {
     const session = this.forgetSession()
     this.lastFailure = undefined
     this.failedAttempts = 0
+    this.agentPreviewKeys.clear()
+    this.panelPreviewKeys.clear()
     if (session !== undefined) await session.dispose()
     this.broadcast({ v: 1, kind: 'state', state: this.state() })
     if (this.sinks.size > 0) await this.startStreaming().catch(() => undefined)

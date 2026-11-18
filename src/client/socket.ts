@@ -202,6 +202,15 @@ function readFailure(value: unknown): BrowserFailure | null {
   }
 }
 
+/** Narrow the temporary-style state from the wire. */
+function readPreview(value: unknown): { active: boolean; count: number } | null {
+  if (typeof value !== 'object' || value === null) return null
+  const candidate = value as Record<string, unknown>
+  if (typeof candidate.active !== 'boolean') return null
+  if (typeof candidate.count !== 'number' || !Number.isFinite(candidate.count)) return null
+  return { active: candidate.active, count: candidate.count }
+}
+
 /** Narrow the panel state from the wire. */
 function readPanelState(value: unknown): BrowserPanelState | null {
   if (typeof value !== 'object' || value === null) return null
@@ -216,6 +225,7 @@ function readPanelState(value: unknown): BrowserPanelState | null {
     tabs.push(tab)
   }
   const lastError = readFailure(candidate.lastError)
+  const preview = readPreview(candidate.preview)
   return {
     tabs,
     activeTabId: candidate.activeTabId as string | null,
@@ -224,6 +234,7 @@ function readPanelState(value: unknown): BrowserPanelState | null {
     ...(typeof candidate.cdpEndpoint === 'string' ? { cdpEndpoint: candidate.cdpEndpoint } : {}),
     ...(typeof candidate.message === 'string' ? { message: candidate.message } : {}),
     ...(lastError === null ? {} : { lastError }),
+    ...(preview === null ? {} : { preview }),
     ...(typeof candidate.attempts === 'number' && Number.isFinite(candidate.attempts) ? { attempts: candidate.attempts } : {}),
     ...(typeof candidate.isolatedAvailable === 'boolean' ? { isolatedAvailable: candidate.isolatedAvailable } : {}),
     ...(typeof candidate.realBrowserConfigured === 'boolean' ? { realBrowserConfigured: candidate.realBrowserConfigured } : {}),

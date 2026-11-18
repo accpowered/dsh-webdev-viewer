@@ -73,6 +73,8 @@ The current wire version stays **v1**. The input and pick commands are additive 
 - `reconnect` — retry the configured source once. The user's Retry; never switches the source.
 - `open-isolated { url? }` — the user clicked "Open in isolated Chromium": switch the source to the browser the host launches itself and render the page here instead of asking for a manually started window. The new `mode` is pushed to every panel.
 - `use-configured` — forget an explicit isolated/attached source and return to the profile's configured browser.
+- `style-preview { keys }` — replace the panel's share of the temporary-style key set (`self|selector||property` strings). The host merges it with the agent tool's keys for the Preview state.
+- `preview-reset` — drop every temporary-style key: the page was reloaded or navigated.
 - `style { requestId, action: 'set' | 'reset' | 'reset-all', ref?, selector?, property?, value? }` — planned panel command for the CDP mirror; not implemented. The native style panel and `webdev_desktop_style` use `native-request` style ops instead.
 - `preview`/`run`/`stop` remain agent tools for now; the panel's actions will call the same Host methods. **TBD** whether they need panel commands.
 
@@ -84,6 +86,7 @@ The current wire version stays **v1**. The input and pick commands are additive 
   - `attempts` — consecutive failed starts since the last live session (absent at zero).
   - `isolatedAvailable` — whether this host can launch an isolated Chromium; the panel only offers that action when true.
   - `realBrowserConfigured` — a real browser is configured although the isolated one is showing; the panel offers the way back.
+  - `preview { active, count }` — temporary runtime style overrides are applied to the visible page. The status row keeps the connection state (`Live`) and adds a blue **Preview** chip; reload/navigation/reset/detach clears it.
 - `frame { tabId, seq, width, height, data }` — base64 PNG; latest-frame-wins. `width/height` are CSS pixels and the image may carry more (the panel's `deviceScaleFactor`); the panel lays the image out at the CSS size, so picks and input keep their coordinate space.
 - `action { trace }` — one-line agent action.
 - `pick-result { requestId, element?, error? }` — element metadata; see §6.
@@ -169,7 +172,8 @@ interface PickedElement {
 - Changes apply live as a plugin-owned temporary override (`element.style.setProperty` on the native guest), not as source edits. The agent-side twin is `webdev_desktop_style { selector, action, property?, value? }`, which returns before/after values and `temporary: true`.
 - Each change records `property`, `before`, `after`, and the element identity. A Reset control removes the inline property again; a reload or navigation clears every override.
 - "Send to agent" inserts a quote with the element identity + the change list + the user's note; the plugin never writes source.
-- Scope: native guest only (the CDP mirror has no style UI). The inspector is element-scoped: a visual the page draws with a child or pseudo-element needs that element picked, which is why pseudo-element targets remain a possible follow-up.
+- Scope: native guest only (the CDP mirror has no style UI). The inspector is element-scoped: a visual the page draws with a child or pseudo-element needs that element picked. The agent tool goes further — `relation: parent`, `pseudo: ::before | ::after`, and `action: inspect` (probes self, parent and both pseudo-elements) — so a composite widget can be diagnosed and changed on the layer that really draws it. Pseudo overrides are one marked stylesheet rule, removed on reset/reload.
+- While any override is active the panel shows a blue **Preview** chip beside the connection state; the host state exposes `preview { active, count }`. The chip clears on reset, reload, navigation, detach, or source reconfigure.
 
 ## 8. Static preview, live reload, project runner
 
@@ -199,12 +203,14 @@ Base (renamed from the upstream, present in T1):
 
 Desktop family (P5, routed through the panel socket to the native guest):
 
-`webdev_desktop_navigate`, `webdev_desktop_snapshot`, `webdev_desktop_click`, `webdev_desktop_type`, `webdev_desktop_press`, `webdev_desktop_scroll`, `webdev_desktop_console`, `webdev_desktop_network`, `webdev_desktop_screenshot`, and `webdev_desktop_style { selector, action: 'get' | 'set' | 'reset', property?, value? }`.
+`webdev_desktop_navigate`, `webdev_desktop_snapshot`, `webdev_desktop_click`, `webdev_desktop_type`, `webdev_desktop_press`, `webdev_desktop_scroll`, `webdev_desktop_console`, `webdev_desktop_network`, `webdev_desktop_screenshot`, and `webdev_desktop_style { selector, action: 'get' | 'set' | 'reset' | 'inspect', relation?: 'self' | 'parent', pseudo?: 'none' | '::before' | '::after', property?, value? }`.
 
 `webdev_desktop_style` is the agent-side twin of the panel style inspector: it applies inline CSS
-(`element.style.setProperty`) to the live page, returns before/after values, and marks every result
-`temporary: true`. It never writes source; a reload or navigation discards the override. A visual the
-page draws with a child or pseudo-element still needs that element picked or named.
+(`element.style.setProperty`) to the live page, or one marked stylesheet rule for a pseudo-element,
+returns before/after values, and marks every result `temporary: true`. It never writes source; a reload
+or navigation discards the override. `action=inspect` reports the values of the element, its parent and
+its `::before`/`::after` layers, which is how a composite widget (Bing's pill is one) is targeted
+correctly. The panel shows a blue **Preview** chip while any override is active.
 
 Add (P1–P3):
 

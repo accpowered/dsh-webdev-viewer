@@ -70,13 +70,71 @@ describe('native style bridge', () => {
     // When the agent reads, changes and resets the radius of the picked element
     const before = await service.nativeStyle('#est_cn', ['border-radius'])
     await service.nativeStyleSet('#est_cn', 'border-radius', '0')
+    const during = service.state().preview
     await service.nativeStyleReset('#est_cn', 'border-radius')
 
     // Then each operation reached the guest as one native-request and the page saw the change
     expect(before).toEqual({ 'border-radius': '9999px' })
     expect(requests.map(request => request.op)).toEqual(['style-get', 'style-set', 'style-reset'])
     expect(requests[1]?.args).toEqual({ selector: '#est_cn', property: 'border-radius', value: '0' })
+    expect(during).toEqual({ active: true, count: 1 })
+    expect(service.state().preview).toBeUndefined()
     expect(styles['border-radius']).toBeUndefined()
+    detach()
+  })
+
+  it('operator targets the parent or a pseudo-element and the request carries the layer', async () => {
+    // Given a mounted desktop panel
+    const { service, sink, requests } = stylePanel()
+    const detach = service.attach(sink)
+    await service.handleCommand(sink, { v: 1, kind: 'native-attach', sessionId: 'session-a' })
+
+    // When the agent reads a pseudo-element of the parent element
+    await service.nativeStyle('#est_cn', ['border-radius'], { relation: 'parent', pseudo: '::before' })
+
+    // Then the layer travels in the native request instead of being guessed by the panel
+    expect(requests[0]?.args).toEqual({
+      selector: '#est_cn',
+      properties: ['border-radius'],
+      relation: 'parent',
+      pseudo: '::before',
+    })
+    detach()
+  })
+
+  it('operator reports panel style keys and the Preview state merges both writers', async () => {
+    // Given an agent override already counted
+    const { service, sink } = stylePanel()
+    const detach = service.attach(sink)
+    await service.handleCommand(sink, { v: 1, kind: 'native-attach', sessionId: 'session-a' })
+    await service.nativeStyleSet('#est_cn', 'color', 'red')
+    expect(service.state().preview).toEqual({ active: true, count: 1 })
+
+    // When the panel reports its own inspector key
+    await service.handleCommand(sink, { v: 1, kind: 'style-preview', keys: ['self|#est_cn||border-radius'] })
+
+    // Then the union is what the chip and the route report
+    expect(service.state().preview).toEqual({ active: true, count: 2 })
+
+    // And a page reload drops every key at once
+    await service.handleCommand(sink, { v: 1, kind: 'preview-reset' })
+    expect(service.state().preview).toBeUndefined()
+    detach()
+  })
+
+  it('operator detaches the panel and the temporary-style state goes with the guest', async () => {
+    // Given an active preview
+    const { service, sink } = stylePanel()
+    const detach = service.attach(sink)
+    await service.handleCommand(sink, { v: 1, kind: 'native-attach', sessionId: 'session-a' })
+    await service.nativeStyleSet('#est_cn', 'border-radius', '0')
+    expect(service.state().preview?.active).toBe(true)
+
+    // When the panel detaches its native guest
+    await service.handleCommand(sink, { v: 1, kind: 'native-detach' })
+
+    // Then the Preview chip cannot outlive the document it described
+    expect(service.state().preview).toBeUndefined()
     detach()
   })
 

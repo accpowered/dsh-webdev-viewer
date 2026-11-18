@@ -147,6 +147,14 @@ export interface BrowserPanelState {
    * visible way back to the configured browser.
    */
   realBrowserConfigured?: boolean
+  /**
+   * Temporary runtime style overrides currently applied to the visible page.
+   *
+   * The status row says Live for the connection; this is the separate "the
+   * document was changed in memory" fact. It clears on reload/navigation,
+   * explicit reset, detach, or reconfigure.
+   */
+  preview?: { active: boolean; count: number }
 }
 
 /** One line of the panel's "what is the agent doing" trace. */
@@ -269,6 +277,16 @@ export type BrowserViewCommand =
   | { v: 1; kind: 'open-isolated'; url?: string }
   /** Forget the explicit source and return to the configured one. */
   | { v: 1; kind: 'use-configured' }
+  /**
+   * Replace the panel's contribution to the temporary-style set.
+   *
+   * Keys are opaque `${selector}|${pseudo}|${property}` strings chosen by the
+   * panel; the host merges them with the agent tool's keys so the Preview chip
+   * and the state route describe the whole document, not just one writer.
+   */
+  | { v: 1; kind: 'style-preview'; keys: string[] }
+  /** Drop every temporary-style key: the page was reloaded or navigated. */
+  | { v: 1; kind: 'preview-reset' }
   | { v: 1; kind: 'native-attach'; sessionId?: string }
   | { v: 1; kind: 'native-detach' }
   | { v: 1; kind: 'native-result'; requestId: string; result?: unknown; error?: string }
@@ -398,6 +416,10 @@ export function isBrowserViewCommand(value: unknown): value is BrowserViewComman
     case 'open-isolated':
       return candidate.url === undefined || typeof candidate.url === 'string'
     case 'use-configured':
+      return true
+    case 'style-preview':
+      return Array.isArray(candidate.keys) && candidate.keys.every(key => typeof key === 'string')
+    case 'preview-reset':
       return true
     case 'native-attach':
       return candidate.sessionId === undefined || typeof candidate.sessionId === 'string'
