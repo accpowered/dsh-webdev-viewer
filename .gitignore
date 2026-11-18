@@ -3,6 +3,7 @@ lib/
 dist/
 coverage/
 .tmp/
+HANDOFF.md
 .pnpm-store/
 shared/*.mjs
 *.tgz
