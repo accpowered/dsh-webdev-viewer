@@ -20,6 +20,8 @@ import {
 } from '../core/protocol.ts'
 import type {
   BrowserActionTrace,
+  BrowserFailure,
+  BrowserFailureReason,
   BrowserPanelState,
   BrowserPickedElement,
   BrowserTabView,
@@ -179,6 +181,27 @@ function readTab(value: unknown): BrowserTabView | null {
   }
 }
 
+/** Narrow one classified failure from the wire. */
+function readFailure(value: unknown): BrowserFailure | null {
+  if (typeof value !== 'object' || value === null) return null
+  const candidate = value as Record<string, unknown>
+  if (typeof candidate.code !== 'string' || candidate.code === '') return null
+  if (typeof candidate.message !== 'string') return null
+  if (typeof candidate.at !== 'number' || !Number.isFinite(candidate.at)) return null
+  const reasons: readonly BrowserFailureReason[] = ['econnrefused', 'not_cdp', 'spawn_denied', 'not_installed', 'timeout', 'unknown']
+  const reason = reasons.find(entry => entry === candidate.reason)
+  return {
+    code: candidate.code,
+    message: candidate.message,
+    at: candidate.at,
+    ...(reason === undefined ? {} : { reason }),
+    ...(typeof candidate.endpoint === 'string' ? { endpoint: candidate.endpoint } : {}),
+    ...(typeof candidate.remediation === 'string' ? { remediation: candidate.remediation } : {}),
+    ...(typeof candidate.detail === 'string' ? { detail: candidate.detail } : {}),
+    ...(candidate.mode === 'isolated' || candidate.mode === 'cdp' ? { mode: candidate.mode } : {}),
+  }
+}
+
 /** Narrow the panel state from the wire. */
 function readPanelState(value: unknown): BrowserPanelState | null {
   if (typeof value !== 'object' || value === null) return null
@@ -192,6 +215,7 @@ function readPanelState(value: unknown): BrowserPanelState | null {
     if (tab === null) return null
     tabs.push(tab)
   }
+  const lastError = readFailure(candidate.lastError)
   return {
     tabs,
     activeTabId: candidate.activeTabId as string | null,
@@ -199,6 +223,10 @@ function readPanelState(value: unknown): BrowserPanelState | null {
     ...(candidate.mode === 'isolated' || candidate.mode === 'cdp' ? { mode: candidate.mode } : {}),
     ...(typeof candidate.cdpEndpoint === 'string' ? { cdpEndpoint: candidate.cdpEndpoint } : {}),
     ...(typeof candidate.message === 'string' ? { message: candidate.message } : {}),
+    ...(lastError === null ? {} : { lastError }),
+    ...(typeof candidate.attempts === 'number' && Number.isFinite(candidate.attempts) ? { attempts: candidate.attempts } : {}),
+    ...(typeof candidate.isolatedAvailable === 'boolean' ? { isolatedAvailable: candidate.isolatedAvailable } : {}),
+    ...(typeof candidate.realBrowserConfigured === 'boolean' ? { realBrowserConfigured: candidate.realBrowserConfigured } : {}),
   }
 }
 

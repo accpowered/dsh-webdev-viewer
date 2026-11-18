@@ -36,6 +36,71 @@ export const SNAPSHOT_NODE_LIMIT = 4000
 /** Ring size for captured console and network entries per tab. */
 export const EVENT_RING_SIZE = 500
 
+/**
+ * Why a browser source could not be reached.
+ *
+ * The labels are contract, not prose: the panel picks a localized sentence, an
+ * agent branches without parsing an error string, and both name the same four
+ * failures that actually happen:
+ *
+ * - `econnrefused` — nothing listens on the endpoint (the browser was never
+ *   started, or it was closed).
+ * - `not_cdp` — something answers on that port, but it is not a DevTools
+ *   endpoint (a web server, an unrelated app, a rejected handshake).
+ * - `spawn_denied` — the browser process itself was refused by the OS
+ *   (crashpad, an ACL, a sandbox), so a launch leaves no endpoint behind.
+ * - `not_installed` — no Chrome/Edge binary is discoverable at all.
+ * - `timeout` — the endpoint accepted a connection but never completed it.
+ * - `unknown` — anything the host could not classify honestly.
+ */
+export type BrowserFailureReason =
+  | 'econnrefused'
+  | 'not_cdp'
+  | 'spawn_denied'
+  | 'not_installed'
+  | 'timeout'
+  | 'unknown'
+
+/**
+ * Stable code for "the configured real browser cannot be reached".
+ *
+ * Tool failures for this case embed the code and its fields as JSON in the
+ * error text, so a call that ends this way is actionable without a second call.
+ */
+export const REAL_BROWSER_UNAVAILABLE_CODE = 'webdev.real_browser_unavailable'
+
+/** Stable code for "the real browser went away mid-session". */
+export const REAL_BROWSER_DISCONNECTED_CODE = 'webdev.real_browser_disconnected'
+
+/** Stable code for "the isolated Chromium could not be started". */
+export const ISOLATED_BROWSER_UNAVAILABLE_CODE = 'webdev.isolated_browser_unavailable'
+
+/** Stable code for a desktop tool call while no panel owns the desktop guest. */
+export const PANEL_NOT_MOUNTED_CODE = 'webdev.panel_not_mounted'
+
+/** One classified failure of a browser source, as the panel and the route report it. */
+export interface BrowserFailure {
+  /** Stable machine code, for example {@link REAL_BROWSER_UNAVAILABLE_CODE}. */
+  code: string
+  /** Short human sentence suitable for the panel and the status route. */
+  message: string
+  /** Millisecond timestamp the failure was recorded. */
+  at: number
+  /** Classified cause; absent when the host could not tell. */
+  reason?: BrowserFailureReason
+  /** Loopback CDP endpoint the failure concerns, when one is configured. */
+  endpoint?: string
+  /** One line about what the user or the agent can do next. */
+  remediation?: string
+  /**
+   * The underlying failure's own words (a socket error, a browser's stderr),
+   * kept for diagnosis. This is untrusted data; render it as text, never HTML.
+   */
+  detail?: string
+  /** Browser source the failure belongs to. */
+  mode?: 'isolated' | 'cdp'
+}
+
 /** One open tab as the panel and the tools see it. */
 export interface BrowserTabView {
   /** Stable CDP target id, the handle tools accept. */
@@ -66,6 +131,22 @@ export interface BrowserPanelState {
   cdpEndpoint?: string
   /** Last error text the host wants the panel to show instead of a frame. */
   message?: string
+  /** Classified last failure, so a tab with no picture is always explainable. */
+  lastError?: BrowserFailure
+  /** Consecutive failed starts since the last live session; absent at zero. */
+  attempts?: number
+  /**
+   * Whether an isolated Chromium could be launched on this host, so the panel
+   * only offers "Open in isolated Chromium" when that action can work.
+   * Reported while real-browser mode is configured.
+   */
+  isolatedAvailable?: boolean
+  /**
+   * Whether a real-browser source is configured even though the viewer is
+   * currently showing the isolated Chromium: the panel uses it to offer a
+   * visible way back to the configured browser.
+   */
+  realBrowserConfigured?: boolean
 }
 
 /** One line of the panel's "what is the agent doing" trace. */
@@ -160,8 +241,34 @@ export type BrowserViewCommand =
   | { v: 1; kind: 'close-tab'; tabId: string }
   | { v: 1; kind: 'input'; event: BrowserInputEvent }
   | { v: 1; kind: 'pick'; requestId: string; x: number; y: number }
-  | { v: 1; kind: 'viewport'; width: number; height: number }
+  /**
+   * Render one tab at the panel's content box.
+   *
+   * `deviceScaleFactor` is the panel's `window.devicePixelRatio`: the page keeps
+   * its CSS layout size, while captures render at that many device pixels per
+   * CSS pixel so a HiDPI screen gets sharp frames instead of an upscaled 1x
+   * image. Omitted means 1.
+   */
+  | { v: 1; kind: 'viewport'; width: number; height: number; deviceScaleFactor?: number }
   | { v: 1; kind: 'pick-mode'; enabled: boolean }
+  /**
+   * Drop the current attachment and try the configured source once more.
+   * The user's Retry: it never switches the browser source.
+   */
+  | { v: 1; kind: 'reconnect' }
+  /**
+   * Explicitly switch to the isolated Chromium the viewer launches itself.
+   *
+   * This is the sanctioned way to stay usable while `realBrowserEnabled` points
+   * at an endpoint nobody started: a person clicked it, and the resulting mode
+   * is visible in the status row. It is never selected silently. `url` is the
+   * page the panel was showing (or the URL a person just typed), loaded once the
+   * isolated browser is up so the same page keeps rendering without a second
+   * browser window.
+   */
+  | { v: 1; kind: 'open-isolated'; url?: string }
+  /** Forget the explicit source and return to the configured one. */
+  | { v: 1; kind: 'use-configured' }
   | { v: 1; kind: 'native-attach'; sessionId?: string }
   | { v: 1; kind: 'native-detach' }
   | { v: 1; kind: 'native-result'; requestId: string; result?: unknown; error?: string }
@@ -279,8 +386,19 @@ export function isBrowserViewCommand(value: unknown): value is BrowserViewComman
     case 'viewport':
       return typeof candidate.width === 'number' && Number.isFinite(candidate.width) && candidate.width > 0
         && typeof candidate.height === 'number' && Number.isFinite(candidate.height) && candidate.height > 0
+        && (candidate.deviceScaleFactor === undefined
+          || (typeof candidate.deviceScaleFactor === 'number'
+            && Number.isFinite(candidate.deviceScaleFactor)
+            && candidate.deviceScaleFactor >= 1
+            && candidate.deviceScaleFactor <= 3))
     case 'pick-mode':
       return typeof candidate.enabled === 'boolean'
+    case 'reconnect':
+      return true
+    case 'open-isolated':
+      return candidate.url === undefined || typeof candidate.url === 'string'
+    case 'use-configured':
+      return true
     case 'native-attach':
       return candidate.sessionId === undefined || typeof candidate.sessionId === 'string'
     case 'native-detach':

@@ -1,7 +1,7 @@
 {
   "name": "dsh-webdev-viewer",
   "description": "Right-sidebar Web/Electron development viewer for DeepSeek Harness: a native Desktop webview plus a CDP fallback, shared agent tools, element picking, static preview, live reload, project runner, and Electron attach.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": false,
   "icon": "icon.svg",
   "type": "module",

@@ -13,9 +13,14 @@
  * holding the address display, the connection marker and the one control this
  * plugin actually has - refresh the captured frame - then the frame itself,
  * then the action trace. Nothing here claims a capability the host does not
- * expose: there is no forward/back pair, no reload of the page (the host drives
- * navigation, this side only observes it) and no "open in a new window",
- * because the page lives in a Chromium process on the host.
+ * expose: there is no forward/back pair, and no reload of the page (the host
+ * drives navigation, this side only observes it).
+ *
+ * When the configured browser source cannot be reached the frame is replaced by
+ * an actionable zero state - configured mode, exact target, classified reason,
+ * Retry, and the explicitly clicked "Open in isolated Chromium" that renders
+ * the page here instead of asking the person to start a second browser window.
+ * The switch is never silent: the status row names the carrier before and after.
  *
  * The refresh control and the state marker are the product's own atoms -
  * IconRefreshOutlineRegular and StateDot from @deepseek-ai/dsh-client-ui-primitives,
@@ -38,7 +43,7 @@ import {
   type StateDotState,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { BrowserActionTrace, BrowserInputEvent, BrowserPanelState, BrowserPickedElement } from '../core/protocol.ts'
+import type { BrowserActionTrace, BrowserFailureReason, BrowserInputEvent, BrowserPanelState, BrowserPickedElement } from '../core/protocol.ts'
 import { BROWSER_VIEW_API_VERSION } from '../core/protocol.ts'
 import type { BrowserViewLiveTitleStore } from './live-title.ts'
 import { BROWSER_VIEW_PARTS, BROWSER_VIEW_PLUGIN } from './semantic.ts'
@@ -85,6 +90,17 @@ export type BrowserViewPanelProps = PropsLocale<'webdev'> & Partial<BrowserViewP
 
 /** Trace rows kept on screen; older tool calls scroll out of relevance. */
 const TRACE_LIMIT = 5
+
+/**
+ * Error codes that mean "the browser source is gone", as opposed to a refused
+ * panel command. Only these turn the status row into Disconnected; a command
+ * failure keeps the ordinary error block.
+ */
+const SOURCE_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'browser-connect-failed',
+  'browser-launch-failed',
+  'browser-disconnected',
+])
 
 /** State before the host publishes anything. */
 const EMPTY_STATE: BrowserPanelState = { tabs: [], activeTabId: null, running: false }
@@ -227,6 +243,12 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   const lastActiveTabRef = useRef<string | null>(null)
   /** Browser source seen in the last state push; a source switch invalidates it too. */
   const lastSourceRef = useRef<{ mode?: 'isolated' | 'cdp'; cdpEndpoint?: string }>({})
+  /**
+   * The last non-blank page this panel showed, so "Open in isolated Chromium"
+   * can restore it instead of handing back an empty viewer. Kept across the
+   * disconnect, which is exactly the moment the tabs list goes empty.
+   */
+  const lastPageUrlRef = useRef('')
 
   const factory = useMemo<BrowserViewSocketFactory>(
     () => socketFactory ?? ((handlers) => connectBrowserViewSocket(handlers, { location, sessionId })),
@@ -237,6 +259,12 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     const instance = factory({
       onStatus: (next) => { setStatus(next) },
       onState: (next) => {
+        // Remember the page before a disconnect empties the tabs list: that URL
+        // is what the isolated-browser action restores.
+        const shown = next.tabs.find((tab) => tab.id === next.activeTabId)
+        if (shown !== undefined && shown.url !== '' && !shown.url.startsWith('about:blank')) {
+          lastPageUrlRef.current = shown.url
+        }
         // Compare outside the state updater: an updater must stay pure. A frame
         // from the old browser source or the previous tab must not outlive it.
         const sourceChanged = lastSourceRef.current.mode !== next.mode
@@ -373,20 +401,62 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   const displayUrl = nativeActive ? nativeUrl || url : url
   const displayTitle = nativeActive ? nativeTitle || pageTitle : pageTitle
   const effectiveLoading = nativeActive ? nativeLoading : loading
+  // The failure a disconnected panel must explain: the host's classified last
+  // error first (it carries the reason and timestamp), then a source-level
+  // socket error, then a legacy message field of an older host. A refused
+  // panel command is a different thing and keeps its own error block.
+  const socketFailure = error === null ? null : { code: error.code, message: error.message }
+  const socketSourceFailure = socketFailure !== null && SOURCE_FAILURE_CODES.has(socketFailure.code)
+    ? socketFailure
+    : null
+  const sourceFailure = state.lastError ?? socketSourceFailure
+  const disconnected = !nativeActive && sourceFailure !== null
+  const shownFailure = sourceFailure ?? socketFailure ?? hostError
+  const idle = !nativeActive && !disconnected && state.running !== true
   // The marker names what the viewer is actually looking at: the socket's phase
-  // first (nothing is live before the host answers), then the page's own load
-  // state. The same three strings the trace footer used to carry.
+  // first (nothing is live before the host answers), then the browser state, then
+  // the page's own load state.
   const statusLabel = nativeActive
     ? nativeLoading ? t('panel.status.loading') : t('panel.status.live')
     : status !== 'open'
       ? t('panel.status.connecting')
-      : loading ? t('panel.status.loading') : t('panel.status.live')
-  // Three of the product's five dot states, in the order a viewer meets them:
-  // nothing reached yet, a page still loading, a settled live picture.
+      : disconnected
+        ? t('panel.status.disconnected')
+        : idle ? t('panel.status.idle') : loading ? t('panel.status.loading') : t('panel.status.live')
+  // The product's five dot states, in the order a viewer meets them: nothing
+  // reached yet, no browser, a live page still loading, a settled picture, and
+  // a disconnected carrier.
   const dotState: StateDotState = nativeActive
     ? nativeLoading ? 'ongoing' : 'done'
-    : status !== 'open' ? 'idle' : loading ? 'ongoing' : 'done'
+    : status !== 'open'
+      ? 'idle'
+      : disconnected ? 'error' : idle ? 'idle' : loading ? 'ongoing' : 'done'
   const modeLabel = nativeActive ? '' : state.mode === 'cdp' ? t('panel.mode.real') : t('panel.mode.isolated')
+  // A source can only be offered when the host can really act on it.
+  const canOpenIsolated = state.mode === 'cdp' && state.isolatedAvailable === true
+  const canUseConfigured = state.mode === 'isolated' && state.realBrowserConfigured === true
+  const shownEndpoint = state.cdpEndpoint ?? state.lastError?.endpoint
+  const shownReason = state.lastError?.reason
+  const failureTime = state.lastError?.at !== undefined
+    ? new Date(state.lastError.at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : undefined
+  /** Localized sentence for a classified reason. */
+  const reasonText = (reason: BrowserFailureReason): string => {
+    switch (reason) {
+      case 'econnrefused': return t('panel.reason.econnrefused')
+      case 'not_cdp': return t('panel.reason.not_cdp')
+      case 'spawn_denied': return t('panel.reason.spawn_denied')
+      case 'not_installed': return t('panel.reason.not_installed')
+      case 'timeout': return t('panel.reason.timeout')
+      case 'unknown': return t('panel.reason.unknown')
+    }
+  }
+  const attemptsText = state.attempts !== undefined
+    ? t('panel.zero.attempts', { count: state.attempts })
+    : undefined
+  // Only a source failure makes the recovery actions meaningful: an empty
+  // viewer that never failed has nothing to retry.
+  const needsRecovery = disconnected
 
   frameDataRef.current = visibleFrame
   const frameVisible = dataUrl !== null
@@ -427,21 +497,31 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   // and the host's available height. Sending the image's natural height would
   // leave a short page with a blank strip; sending the host's outer width is
   // what made an 863px page render into a narrower sidebar.
+  //
+  // The device scale factor travels with it: the host keeps the CSS viewport at
+  // this size but renders captures at the panel's pixel density, so a 1363x963
+  // panel on a 1.5x screen gets a sharp 2044x1444 still instead of an upscaled
+  // one. A change of window/monitor re-sends both.
   useEffect(() => {
     if (nativeActive) return
     const host = frameHostRef.current
     if (host === null) return
     const image = imageRef.current
     let timer: ReturnType<typeof setTimeout> | undefined
-    let last = { width: 0, height: 0 }
+    let last = { width: 0, height: 0, dpr: 1 }
+    const deviceScaleFactor = (): number => {
+      const raw = typeof window === 'undefined' ? 1 : (window.devicePixelRatio || 1)
+      return Math.min(3, Math.max(1, Math.round(raw * 100) / 100))
+    }
     const send = (): void => {
       const content = contentRectOf(image)
       const width = Math.round(content?.width ?? host.clientWidth)
       const height = Math.round(host.clientHeight)
+      const dpr = deviceScaleFactor()
       if (width < 240 || height < 240) return
-      if (Math.abs(width - last.width) < 2 && Math.abs(height - last.height) < 2) return
-      last = { width, height }
-      socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'viewport', width, height })
+      if (Math.abs(width - last.width) < 2 && Math.abs(height - last.height) < 2 && Math.abs(dpr - last.dpr) < 0.01) return
+      last = { width, height, dpr }
+      socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'viewport', width, height, deviceScaleFactor: dpr })
     }
     if (typeof ResizeObserver === 'undefined') {
       send()
@@ -955,7 +1035,20 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
         >
           <StateDot state={dotState} size={10} />
           <span className={css.statusText}>{statusLabel}</span>
-          {modeLabel.length > 0 && <span className={css.mode}>{modeLabel}</span>}
+          {modeLabel.length > 0 && (canUseConfigured ? (
+            // The explicit isolated choice is visible here and undoable here:
+            // one click returns to the configured real browser.
+            <button
+              type="button"
+              className={css.modeAction}
+              title={t('panel.zero.useConfigured')}
+              onClick={() => { socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'use-configured' }) }}
+            >
+              {modeLabel}
+            </button>
+          ) : (
+            <span className={css.mode}>{modeLabel}</span>
+          ))}
           {!nativeActive && visibleFrame !== null && (
             <span className={css.frameSize} title={t('panel.toolbar.frameHint')}>
               {visibleFrame.width}×{visibleFrame.height} · PNG
@@ -1108,16 +1201,97 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
               </div>
             )}
           </div>
-        ) : effectiveError !== null ? (
+        ) : shownFailure !== null && !disconnected ? (
           <div className={css.error} data-dsh-part={BROWSER_VIEW_PARTS.error} role="alert">
             <span className={css.errorTitle}>{t('panel.error.title')}</span>
-            <span className={css.errorBody}>{effectiveError.message}</span>
-            {effectiveError.code.length > 0 && <span className={css.errorCode}>{effectiveError.code}</span>}
+            <span className={css.errorBody}>{shownFailure.message}</span>
+            {shownFailure.code.length > 0 && <span className={css.errorCode}>{shownFailure.code}</span>}
           </div>
-        ) : dataUrl === null || visibleFrame === null ? (
-          <div className={css.empty} data-dsh-part={BROWSER_VIEW_PARTS.empty}>
-            <span className={css.emptyTitle}>{t('panel.empty.title')}</span>
-            <span className={css.emptyHint}>{t('panel.empty.hint')}</span>
+        ) : visibleFrame === null || dataUrl === null ? (
+          <div
+            className={css.zero}
+            data-dsh-part={shownFailure === null ? BROWSER_VIEW_PARTS.empty : BROWSER_VIEW_PARTS.error}
+            role={shownFailure === null ? undefined : 'alert'}
+          >
+            <span className={css.zeroTitle}>
+              {shownFailure === null ? t('panel.empty.title') : t('panel.zero.title')}
+            </span>
+            <span className={css.zeroHint}>
+              {shownFailure === null ? t('panel.empty.hint') : t('panel.zero.hint')}
+            </span>
+            <div className={css.zeroMeta}>
+              <div className={css.zeroRow}>
+                <span className={css.zeroKey}>{t('panel.zero.mode')}</span>
+                <span className={css.zeroValue}>{modeLabel.length > 0 ? modeLabel : t('panel.mode.isolated')}</span>
+              </div>
+              {shownEndpoint !== undefined && (
+                <div className={css.zeroRow}>
+                  <span className={css.zeroKey}>{t('panel.zero.target')}</span>
+                  <span className={css.zeroValue} title={shownEndpoint}>{shownEndpoint}</span>
+                </div>
+              )}
+              {attemptsText !== undefined && (
+                <div className={css.zeroRow}>
+                  <span className={css.zeroValue}>{attemptsText}</span>
+                </div>
+              )}
+            </div>
+            {shownFailure !== null && (
+              <div className={css.zeroFailure}>
+                <span className={css.errorTitle}>
+                  {shownReason === undefined ? t('panel.error.title') : reasonText(shownReason)}
+                </span>
+                <span className={css.errorBody}>{shownFailure.message}</span>
+                {(shownFailure.code.length > 0 || failureTime !== undefined) && (
+                  <span className={css.errorCode}>
+                    {shownFailure.code}
+                    {failureTime === undefined ? '' : `${shownFailure.code.length > 0 ? ' · ' : ''}${failureTime}`}
+                  </span>
+                )}
+                {state.lastError?.remediation !== undefined && (
+                  <span className={css.errorBody}>{state.lastError.remediation}</span>
+                )}
+                {state.lastError?.detail !== undefined && (
+                  <span className={css.errorCode}>{state.lastError.detail}</span>
+                )}
+              </div>
+            )}
+            {needsRecovery && (
+              <div className={css.zeroActions}>
+                <button
+                  type="button"
+                  className={cx(css.pickButton, css.zeroPrimary)}
+                  onClick={() => { socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'reconnect' }) }}
+                >
+                  {t('panel.zero.retry')}
+                </button>
+                {canOpenIsolated && (
+                  <button
+                    type="button"
+                    className={css.pickButton}
+                    onClick={() => {
+                      const page = lastPageUrlRef.current
+                      socketRef.current?.send({
+                        v: BROWSER_VIEW_API_VERSION,
+                        kind: 'open-isolated',
+                        ...page === '' ? {} : { url: page },
+                      })
+                    }}
+                  >
+                    {t('panel.zero.openIsolated')}
+                  </button>
+                )}
+                {canUseConfigured && (
+                  <button
+                    type="button"
+                    className={css.pickButton}
+                    onClick={() => { socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'use-configured' }) }}
+                  >
+                    {t('panel.zero.useConfigured')}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <div

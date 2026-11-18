@@ -31,17 +31,44 @@ import {
 } from './protocol.ts'
 import type { CdpScreenshotParams } from './screenshot.ts'
 
+/**
+ * Largest side a screencast frame is allowed to have, in CSS pixels.
+ *
+ * The old cap was the configured default viewport (1280x800), which silently
+ * downscaled every panel wider than 1280 and made the mirror look soft on a
+ * HiDPI screen. The cap is fixed rather than per-tab: the screencast is started
+ * before a panel has declared its size, and changing the max would mean
+ * restarting the stream on every resize. Chrome captures at the viewport size
+ * when it is smaller, so this only bounds a runaway page.
+ */
+export const SCREENCAST_MAX_SIDE = 4096
+
+/**
+ * How long a screencast frame must be the newest one before the host spends one
+ * high-resolution capture on it.
+ *
+ * The screencast protocol only produces 1 device pixel per CSS pixel, so a live
+ * mirror is inherently soft on a 1.5x/2x display. A paused page is the case that
+ * matters for reading and layout work: one still frame after the motion stops
+ * gives the panel real detail without paying for a screenshot on every frame.
+ */
+export const CRISP_FRAME_SETTLE_MS = 200
+
 /** One JPEG frame as the panel receives it. */
 export interface ScreencastFrame {
   /** Tab the frame belongs to. */
   tabId: string
   /** Monotonic per-tab frame counter. */
   seq: number
-  /** Frame width in CSS pixels. */
+  /**
+   * Frame width in CSS pixels. The encoded image may be larger when the panel
+   * asked for a device scale factor; the panel always lays it out at this size,
+   * which is the same space as boxes, picks, and input coordinates.
+   */
   width: number
-  /** Frame height in CSS pixels. */
+  /** Frame height in CSS pixels, matching {@link width}. */
   height: number
-  /** Base64 JPEG without the `data:` prefix. */
+  /** Base64 PNG without the `data:` prefix. */
   data: string
 }
 
@@ -101,6 +128,14 @@ interface TabRecord {
   pageVersion: number
   /** Size the panel asked this tab to render at, if it has asked. */
   viewportOverride?: { width: number; height: number }
+  /**
+   * Device pixels per CSS pixel the panel wants captures rendered at. Kept
+   * beside the viewport override because it changes with the panel's screen,
+   * not with the page; 1 (or absent) is the plain 1x path.
+   */
+  deviceScaleFactor?: number
+  /** Pending high-resolution capture for a screencast that just settled. */
+  crispTimer?: ReturnType<typeof setTimeout>
   /** Whether the page-side picker binding/script has been installed at least once. */
   pagePickerInstalled?: boolean
 }
@@ -407,6 +442,7 @@ export class TabManager {
   private removeTarget(targetId: string): void {
     const record = this.tabs.get(targetId)
     if (record === undefined) return
+    this.clearCrispFrame(record)
     this.tabs.delete(targetId)
     this.bySession.delete(record.sessionId)
     if (this.active === targetId) this.active = [...this.tabs.keys()].at(-1) ?? null
@@ -433,11 +469,15 @@ export class TabManager {
    * @param tabId - target tab.
    * @param width - requested CSS width.
    * @param height - requested CSS height.
+   * @param deviceScaleFactor - panel device pixels per CSS pixel. @default 1
    */
-  async setViewport(tabId: string, width: number, height: number): Promise<void> {
+  async setViewport(tabId: string, width: number, height: number, deviceScaleFactor = 1): Promise<void> {
     const record = this.requireRecord(tabId)
     const w = Math.max(200, Math.min(4096, Math.round(width)))
     const h = Math.max(200, Math.min(4096, Math.round(height)))
+    const dpr = Math.max(1, Math.min(3, Math.round(deviceScaleFactor * 100) / 100))
+    // CSS layout stays at the panel size; the scale factor only makes captures
+    // render more finely, so page coordinates keep their 1:1 meaning.
     await this.transport.send('Emulation.setDeviceMetricsOverride', {
       width: w,
       height: h,
@@ -445,6 +485,7 @@ export class TabManager {
       mobile: false,
     }, record.sessionId)
     record.viewportOverride = { width: w, height: h }
+    record.deviceScaleFactor = dpr
     await this.refreshFrame(tabId).catch(() => undefined)
   }
 
@@ -551,8 +592,8 @@ export class TabManager {
     record.screencastRunning = true
     await this.transport.send('Page.startScreencast', {
       format: 'png',
-      maxWidth: this.viewport.width,
-      maxHeight: this.viewport.height,
+      maxWidth: SCREENCAST_MAX_SIDE,
+      maxHeight: SCREENCAST_MAX_SIDE,
       everyNthFrame: 1,
     }, record.sessionId)
   }
@@ -565,6 +606,7 @@ export class TabManager {
     const record = this.tabs.get(tabId)
     if (record === undefined || !record.screencastRunning) return
     record.screencastRunning = false
+    this.clearCrispFrame(record)
     await this.transport.send('Page.stopScreencast', {}, record.sessionId)
   }
 
@@ -606,10 +648,20 @@ export class TabManager {
    * @returns the emitted frame.
    */
   async refreshFrame(tabId: string): Promise<ScreencastFrame> {
-    const data = await this.captureScreenshot(tabId)
     const record = this.requireRecord(tabId)
-    record.frameSeq += 1
     const viewport = await this.frameViewport(record)
+    const dpr = record.deviceScaleFactor ?? 1
+    // The encoded image carries device pixels; the frame's own width/height
+    // stay CSS pixels, so the panel lays it out 1:1 and maps input in the same
+    // coordinate space it always did.
+    const data = dpr > 1
+      ? await this.captureScreenshot(tabId, {
+        format: 'png',
+        captureBeyondViewport: false,
+        clip: { x: 0, y: 0, width: viewport.width, height: viewport.height, scale: dpr },
+      })
+      : await this.captureScreenshot(tabId)
+    record.frameSeq += 1
     const frame: ScreencastFrame = {
       tabId: record.id,
       seq: record.frameSeq,
@@ -619,6 +671,39 @@ export class TabManager {
     }
     this.onFrame?.(frame)
     return frame
+  }
+
+  /**
+   * Arm one high-resolution capture for a screencast that just settled.
+   *
+   * The screencast itself only carries 1x CSS-pixel frames, so a live mirror is
+   * soft on a HiDPI screen while it moves. Once no new frame arrives for
+   * {@link CRISP_FRAME_SETTLE_MS}, one screenshot re-renders the page at the
+   * panel's device scale and replaces the soft still. Re-arming on every frame
+   * is what keeps a continuously animating page from paying for screenshots.
+   * @param record - the tab whose frame just arrived.
+   */
+  private scheduleCrispFrame(record: TabRecord): void {
+    this.clearCrispFrame(record)
+    if ((record.deviceScaleFactor ?? 1) <= 1) return
+    const timer = setTimeout(() => {
+      record.crispTimer = undefined
+      void this.refreshFrame(record.id).catch(() => undefined)
+    }, CRISP_FRAME_SETTLE_MS)
+    // Housekeeping must never be the reason the host cannot exit.
+    const unref = (timer as unknown as { unref?: () => void }).unref
+    if (typeof unref === 'function') unref.call(timer)
+    record.crispTimer = timer
+  }
+
+  /**
+   * Drop a pending high-resolution capture.
+   * @param record - the tab whose pending capture is obsolete.
+   */
+  private clearCrispFrame(record: TabRecord): void {
+    if (record.crispTimer === undefined) return
+    clearTimeout(record.crispTimer)
+    record.crispTimer = undefined
   }
 
   /**
@@ -708,6 +793,7 @@ export class TabManager {
     if (this.disposed) return
     this.disposed = true
     for (const record of this.tabs.values()) {
+      this.clearCrispFrame(record)
       if (!record.screencastRunning) continue
       record.screencastRunning = false
       await this.transport.send('Page.stopScreencast', {}, record.sessionId).catch(() => undefined)
@@ -924,9 +1010,18 @@ export class TabManager {
       if (typeof shaped.data !== 'string' || shaped.data === '') return
       record.frameSeq += 1
       const metadata = shaped.metadata
-      const width = typeof metadata?.deviceWidth === 'number' ? Math.round(metadata.deviceWidth) : this.viewport.width
-      const height = typeof metadata?.deviceHeight === 'number' ? Math.round(metadata.deviceHeight) : this.viewport.height
+      // A tab the panel pinned has one authoritative CSS size. Metadata can
+      // briefly report device pixels (a capture at a device scale leaves the
+      // compositor at that scale for one frame), so trusting it would make the
+      // panel lay one frame out at 1.5x and map input wrongly until the next.
+      const pinned = record.viewportOverride
+      const width = pinned?.width
+        ?? (typeof metadata?.deviceWidth === 'number' ? Math.round(metadata.deviceWidth) : this.viewport.width)
+      const height = pinned?.height
+        ?? (typeof metadata?.deviceHeight === 'number' ? Math.round(metadata.deviceHeight) : this.viewport.height)
       this.onFrame?.({ tabId: record.id, seq: record.frameSeq, width, height, data: shaped.data })
+      // The live frame is 1x; upgrade the settled still to the panel's scale.
+      this.scheduleCrispFrame(record)
     }))
   }
 }

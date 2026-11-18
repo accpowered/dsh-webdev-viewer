@@ -24,7 +24,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-tools'
-import { BrowserViewService } from './host/service.ts'
+import { BrowserViewService, LIVENESS_INTERVAL_MS } from './host/service.ts'
+import { resolveChromePath } from './core/chrome.ts'
 import { makeRoutes } from './host/routes.ts'
 import { createBrowserTools, type DurableImageRef } from './host/tools.ts'
 import { createWorkspaceTools } from './host/workspace-tools.ts'
@@ -139,6 +140,13 @@ export function apply(ctx: Context, config?: RuntimeConfig): void {
     // Read per sweep, so a settings edit applies without a remount and without
     // reconnecting the browser: a threshold change is not a source change.
     idleCloseDays: () => effectiveConfig(config).idleCloseDays,
+    // A browser closed behind an attached panel must become a visible
+    // disconnect with Reconnect, not a frozen frame. Enabled here rather than
+    // by default so unit tests never poll a real port.
+    livenessIntervalMs: LIVENESS_INTERVAL_MS,
+    // The panel only offers "Open in isolated Chromium" when this host can
+    // really launch one; a missing binary is reported as not_installed instead.
+    chromeAvailable: () => resolveChromePath() !== undefined,
     // Resolved per navigation, not at mount: the connection service owns the
     // process launch token, may mount after this plugin, and answers with a
     // URL that is only good for this process. A host that mounts none simply

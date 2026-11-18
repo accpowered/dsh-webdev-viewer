@@ -13,13 +13,14 @@ A DeepSeek Harness (DSH) plugin for building and verifying web and Electron UIs 
 - Drive a real Chromium page from the tab: click, type, scroll, navigate, inspect.
 - Let the user and the agent drive the **same page** through the CDP tools when attached to the real browser; the native webview is the interactive Desktop surface.
 - Select elements with hover/active outlines and persistent numbered markers; add a note to the last pick and insert a structured quote into the DSH composer. The page-side picker works in the native Desktop guest and in the real browser window.
-- Tweak common visual properties (`color`, background, font size, padding, margin, radius) live on the native guest, reset them, and send the temporary change to the agent as a quote.
+- Tweak common visual properties (`color`, background, font size, padding, margin, radius) live on the native guest, reset them, and send the temporary change to the agent as a quote. The agent can do the same preview itself with `webdev_desktop_style` (`get`/`set`/`reset`, any CSS property, before/after values) — runtime inline styles only, never a source write.
 - Preview a workspace folder over a token-gated loopback server and reload it when files change.
 - Run a detected project dev server or an explicit command, stream logs, detect a localhost URL, and open it.
 - Attach to an Electron app's renderer over CDP with `webdev_electron_attach`; pair it with a `webdev_run` launch to capture main-process stdout/stderr via `webdev_logs`.
 - Give the agent full page detail: DOM/ARIA snapshot with refs, console, network, screenshots (PNG or JPEG).
 - Open any HTTP(S), `data:`, or `about:` URL, including loopback services.
 - Mirror the page in a headed Chrome/Edge window over CDP.
+- Recover without opening a second browser window: when the configured real browser is unreachable, the tab shows the mode, the exact CDP target, the classified reason and time, plus **Retry** and an explicit **Open in isolated Chromium** action that renders the page in the panel. A browser closed mid-session becomes a visible disconnect within about a second and re-attaches by itself when the endpoint answers again.
 
 ## Architecture truth
 
@@ -29,17 +30,21 @@ a **real guest renderer in the sidebar**, so text, scrolling and input are nativ
 
 The CDP screencast remains the fallback for the web client (no Desktop bridge) and is still the
 transport for the `webdev_*` tools. The desktop guest has its own
-`webdev_desktop_snapshot/click/type/press/scroll/screenshot/navigate` family, routed through the panel
-socket; it must be hard-refreshed into the client before the first attach.
+`webdev_desktop_snapshot/click/type/press/scroll/console/network/style/screenshot/navigate` family,
+routed through the panel socket; it must be hard-refreshed into the client before the first attach.
+The mirror is HiDPI-aware: the panel sends its `devicePixelRatio` with the viewport, live frames are
+captured at the panel's CSS size, and a settled page is upgraded to a device-scale still.
 
 ## Known limitations
 
-- **Desktop tool bridge.** `webdev_desktop_navigate/snapshot/click/type/press/scroll/console/screenshot` target
+- **Desktop tool bridge.** `webdev_desktop_navigate/snapshot/click/type/press/scroll/console/network/style/screenshot` target
   the native guest through the panel socket. A Host reload causes the panel to re-announce itself on the
   next socket open. The CDP family remains available for the separate real-browser attachment.
-- **Style editing is native-only and compact.** Six common properties are live-previewed in the native
-  guest; the CDP mirror has no style panel yet, and the quote carries current values rather than a
-  before/after diff.
+- **Style editing is native-only and element-scoped.** Six common properties are live-previewed in the
+  native style panel, and `webdev_desktop_style` can set any property on the element the user picked (or
+  the agent identifies); the CDP mirror has no style panel yet. A visual drawn by a child or
+  pseudo-element (Bing's pill is one) still needs the right element picked, and the quote carries current
+  values rather than a before/after diff.
 - **Electron is renderer attach only.** A debug port must exist at launch; native menus/dialogs/window
   chrome and main-process JavaScript are not reachable. Main-process text logs come from a
   `webdev_run` launch and `webdev_logs`.

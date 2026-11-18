@@ -546,6 +546,9 @@ title: ${value.title}
     description: 'List the browser tabs this plugin currently has open, with their ids, urls, titles, and loading state. '
       + 'Call it when you need a tab id, when you are unsure whether a browser is running at all, or after the user closed a tab in the panel. '
       + 'In isolated mode it never starts a browser; in real-browser mode it connects to the configured CDP endpoint and discovers existing page tabs. '
+      + 'When that endpoint is unreachable the failure carries a stable code (webdev.real_browser_unavailable), an endpoint, a reason '
+      + '(econnrefused, not_cdp, spawn_denied, not_installed, timeout, unknown) and a remediation as JSON, so branch on fields instead of prose. '
+      + 'The user can unblock the panel without a new browser window by clicking "Open in isolated Chromium"; do not start Chrome yourself to work around it. '
       + '中文触发词：有多少标签页、当前浏览器状态、打开着哪些页面。',
     parameters: {},
     output: {

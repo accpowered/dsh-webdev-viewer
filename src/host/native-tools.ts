@@ -32,6 +32,16 @@ function renderJson(value: unknown): ContentBlock[] {
 }
 
 /** One snapshot node, mirroring the wire contract. */
+const DEFAULT_STYLE_PROPERTIES = [
+  'color',
+  'background-color',
+  'font-size',
+  'padding',
+  'margin',
+  'border-radius',
+] as const
+
+/** One snapshot node, mirroring the wire contract. */
 const SNAPSHOT_NODE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -287,6 +297,112 @@ export function createDesktopTools(deps: DesktopToolDeps): ToolDefinition[] {
     },
   })
 
+  const style = defineTool({
+    name: 'webdev_desktop_style',
+    description: 'Change one element\'s style in the desktop webview the user is looking at, live, and report the before/after values. '
+      + 'This is a temporary preview: it writes an inline style on this page instance only, never edits a source file, and a reload or navigation discards it. '
+      + 'Use it to demonstrate a visual fix (border-radius, color, spacing, padding) before the user decides on a source change; the panel\'s own style inspector does the same thing for the six common properties. '
+      + 'action=get reads the authored inline value when one exists, otherwise the computed value. action=reset removes the inline property again. '
+      + 'Take the selector from the element the user picked, or from webdev_desktop_snapshot. '
+      + '中文触发词：改样式看看、临时样式、圆角、颜色预览、前端效果调试。',
+    parameters: {
+      selector: {
+        type: 'string',
+        required: true,
+        description: 'CSS selector of the element in the desktop guest, e.g. from a pick or webdev_desktop_snapshot.',
+      },
+      action: {
+        type: 'string',
+        enum: ['get', 'set', 'reset'],
+        description: 'Operation. Defaults to set when value is given, otherwise get.',
+      },
+      property: { type: 'string', description: 'CSS property to set/reset/get, e.g. border-radius, color, padding.' },
+      value: { type: 'string', description: 'CSS value for set, e.g. "0" or "#ff0000".' },
+      properties: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'For get: properties to read. Defaults to color, background-color, font-size, padding, margin, border-radius.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          selector: { type: 'string', required: true },
+          action: { type: 'string', required: true },
+          property: { type: 'string' },
+          value: { type: 'string' },
+          before: { type: 'string' },
+          after: { type: 'string' },
+          values: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                property: { type: 'string', required: true },
+                value: { type: 'string', required: true },
+              },
+            },
+          },
+          temporary: { type: 'boolean', required: true, description: 'Always true: the override lives on the page instance only and a reload discards it.' },
+          summary: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => renderJson(value),
+    },
+    execute: async (args) => {
+      const selector = args.selector.trim()
+      if (selector === '') throw new Error('webdev_desktop_style needs a selector')
+      const action = args.action ?? (args.value === undefined ? 'get' : 'set')
+      if (action === 'get') {
+        const properties = args.properties !== undefined && args.properties.length > 0
+          ? args.properties
+          : [...DEFAULT_STYLE_PROPERTIES]
+        const values = await service.nativeStyle(selector, properties)
+        return {
+          selector,
+          action,
+          values: properties.map(property => ({ property, value: values[property] ?? '' })),
+          temporary: true,
+          summary: `Read ${properties.length} style value(s) of ${selector} in the desktop view`,
+        }
+      }
+      const property = args.property?.trim()
+      if (property === undefined || property === '') {
+        throw new Error(`webdev_desktop_style ${action} needs a CSS property`)
+      }
+      const before = (await service.nativeStyle(selector, [property]))[property] ?? ''
+      if (action === 'set') {
+        if (args.value === undefined) throw new Error('webdev_desktop_style set needs a value')
+        await service.nativeStyleSet(selector, property, args.value)
+        const after = (await service.nativeStyle(selector, [property]))[property] ?? ''
+        return {
+          selector,
+          action,
+          property,
+          value: args.value,
+          before,
+          after,
+          temporary: true,
+          summary: `${property}: ${before === '' ? '(none)' : before} -> ${after === '' ? '(none)' : after} on ${selector} (temporary preview, not saved)`,
+        }
+      }
+      await service.nativeStyleReset(selector, property)
+      const after = (await service.nativeStyle(selector, [property]))[property] ?? ''
+      return {
+        selector,
+        action,
+        property,
+        before,
+        after,
+        temporary: true,
+        summary: `reset ${property}: ${before === '' ? '(none)' : before} -> ${after === '' ? '(stylesheet value)' : after} on ${selector} (temporary preview)`,
+      }
+    },
+  })
+
   const screenshot = defineTool({
     name: 'webdev_desktop_screenshot',
     description: 'Capture the desktop webview the user sees as an image and return the image. '
@@ -358,5 +474,5 @@ title: ${value.title}
     },
   })
 
-  return [navigate, snapshot, click, type, press, scroll, consoleTool, networkTool, screenshot]
+  return [navigate, snapshot, click, type, press, scroll, consoleTool, networkTool, style, screenshot]
 }

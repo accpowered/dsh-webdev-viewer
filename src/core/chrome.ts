@@ -18,7 +18,7 @@
 
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readFileSync } from 'node:fs'
 import type { Dirent } from 'node:fs'
 import { mkdtemp, lstat, readdir, rmdir, unlink } from 'node:fs/promises'
 import { createServer } from 'node:net'
@@ -34,6 +34,18 @@ export const CHROME_STARTUP_TIMEOUT_MS = 20_000
 
 /** How long `dispose` waits for a polite exit before it escalates. */
 export const CHROME_EXIT_TIMEOUT_MS = 5_000
+
+/**
+ * How much of a failed launch's stderr is kept.
+ *
+ * Chrome explains a refused start on stderr and exits: crashpad's `OpenProcess:
+ * Access is denied`, a locked profile, a bad switch. Without those bytes the
+ * host can only say "the endpoint never appeared", which is exactly the
+ * unhelpful message this limit exists to replace. The tail is bounded because
+ * only the last lines explain a start; an unbounded buffer would grow with the
+ * browser's whole life.
+ */
+export const CHROME_STDERR_LIMIT = 2_000
 
 /**
  * Conventional Windows install locations, most specific first. Linux and macOS
@@ -339,8 +351,31 @@ export class ChromeProcess {
       extraArgs: options.extraArgs,
     })
     let child: ChildProcess
+    let stderrPath: string | undefined
     try {
-      child = spawn(chromePath, args, { stdio: 'ignore', windowsHide: true })
+      // stderr is redirected to a file in this launch's own profile directory,
+      // not to a pipe. Two reasons: the browser's explanation of a refused start
+      // (`crashpad ... OpenProcess: Access is denied`) is the only thing that
+      // distinguishes "not installed" from "the OS denied the process", and a
+      // pipe is a handle a confined host may not be allowed to create, which
+      // would turn a refused spawn into a broken launcher. stdout carries
+      // page-independent chatter and is dropped.
+      stderrPath = join(userDataDir, 'stderr.log')
+      let stderrFd: number | undefined
+      try {
+        stderrFd = openSync(stderrPath, 'w')
+      } catch {
+        // A host that cannot open even this file still gets a working launch;
+        // the failure message then keeps its structural classification.
+        stderrPath = undefined
+      }
+      child = spawn(chromePath, args, {
+        stdio: ['ignore', 'ignore', stderrFd === undefined ? 'ignore' : stderrFd],
+        windowsHide: true,
+      })
+      // The child owns its duplicated handle from here; the parent's copy is
+      // closed so the file is not held open past the browser's life.
+      if (stderrFd !== undefined) closeSync(stderrFd)
     } catch (error) {
       await removeTempProfile(userDataDir)
       throw new Error(`Could not start ${chromePath}: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
@@ -355,6 +390,7 @@ export class ChromeProcess {
         port,
         child,
         timeoutMs: options.startupTimeoutMs ?? CHROME_STARTUP_TIMEOUT_MS,
+        stderr: () => readStderr(stderrPath),
       })
       process_.handle.webSocketDebuggerUrl = endpoint
       return process_
@@ -417,13 +453,14 @@ export class ChromeProcess {
 
 /**
  * Poll `/json/version` until the browser publishes its debugger URL.
- * @param options - port, child handle, deadline.
+ * @param options - port, child handle, deadline, and the stderr tail accessor.
  * @returns the `webSocketDebuggerUrl`.
  */
 async function waitForDevToolsEndpoint(options: {
   port: number
   child: ChildProcess
   timeoutMs: number
+  stderr: () => string
 }): Promise<string> {
   const deadline = Date.now() + options.timeoutMs
   let lastError = 'no response'
@@ -433,7 +470,7 @@ async function waitForDevToolsEndpoint(options: {
     const exitCode = options.child.exitCode
     if (exitCode !== null) {
       throw new Error(
-        `Chrome exited before its DevTools endpoint came up (exit code ${exitCode})${describeExitHint(options.port)}`,
+        `Chrome exited before its DevTools endpoint came up (exit code ${exitCode})${describeExitHint(options.port)}${describeStderr(options.stderr())}`,
       )
     }
     try {
@@ -453,13 +490,49 @@ async function waitForDevToolsEndpoint(options: {
     await new Promise<void>(resolve => { setTimeout(resolve, 100) })
   }
   throw new Error(
-    `Chrome did not open its DevTools endpoint on 127.0.0.1:${options.port} within ${options.timeoutMs} ms (${lastError})`,
+    `Chrome did not open its DevTools endpoint on 127.0.0.1:${options.port} within ${options.timeoutMs} ms (${lastError})${describeStderr(options.stderr())}`,
   )
 }
 
 /** A hint appended to an early-exit message for the most common cause. */
 function describeExitHint(port: number): string {
   return `. The profile directory may be locked, or another process holds port ${port}.`
+}
+
+/**
+ * Read the stderr tail a launch redirected to its own file.
+ *
+ * Best-effort by design: the file may still be held open by the child, so a
+ * read failure costs the diagnostic detail, never the failure itself.
+ * @param path - stderr file of the launch, when one was created.
+ * @returns the bounded tail, or an empty string.
+ */
+function readStderr(path: string | undefined): string {
+  if (path === undefined) return ''
+  try {
+    const text = readFileSync(path, 'utf8')
+    return text.length > CHROME_STDERR_LIMIT ? text.slice(text.length - CHROME_STDERR_LIMIT) : text
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Summarize captured stderr for a launch failure.
+ *
+ * The lead-in names the cause class the reader can act on; the tail keeps the
+ * browser's own words, which is where the crashpad/ACL evidence lives. Empty
+ * stderr adds nothing, so a silent exit keeps its old message.
+ * @param stderr - captured stderr tail.
+ * @returns a suffix starting with a space, or an empty string.
+ */
+function describeStderr(stderr: string): string {
+  const text = stderr.trim()
+  if (text === '') return ''
+  const denied = /crashpad|access is denied|拒绝访问|openprocess|self-terminating|operation not permitted/i.test(text)
+  return denied
+    ? ` The browser process was denied by the OS (crashpad/ACL). Browser output: ${text}`
+    : ` Browser output: ${text}`
 }
 
 /**

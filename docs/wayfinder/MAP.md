@@ -31,6 +31,8 @@ A published, installable `dsh-webdev-viewer` v0.1: a DSH right-sidebar workbench
 - [R5 — Electron attach over CDP](tickets/R5-electron-cdp.md): GO for renderer mirror + logs; own the launch with port 0; loopback-only RCE surface; Windows hidden-window throttling risk; no native window embedding.
 - [R6 — Pencil/pen.dev interaction patterns](tickets/R6-pen-interactions.md): select-then-prompt; Explain/Change chips (v1); variation intents (v2); no generate button in the toolbar; never leave a dirty tree when comparing variants; stale picks must be re-resolved.
 - [R7 — Temporary visual style inspector](tickets/R7-style-editing.md): GO for P4, inline CSSOM, 26 properties in six groups, backendNodeId identity, authored-value quote, no reload persistence, no auto-send/source writes.
+- [B1 — Unavailable real browser](tickets/B1-real-browser-unavailable.md): a failed source is classified once in the host (`econnrefused` / `not_cdp` / `spawn_denied` / `not_installed` / `timeout` / `unknown`) and exposed as `lastError` + `attempts`; the panel renders a zero state with Retry and an explicit, user-clicked **Open in isolated Chromium** (no silent fallback; the mode change is visible and reversible); a real browser closed mid-session becomes `webdev.real_browser_disconnected` within ~2 s and re-attaches by itself when the endpoint answers.
+- [B1 follow-up — mirror sharpness and agent style preview](tickets/B1-real-browser-unavailable.md): the CDP mirror takes the panel's `devicePixelRatio` with its viewport, no longer caps frames at 1280×800, and upgrades a settled page to a device-scale still; `webdev_desktop_style` gives the agent `get`/`set`/`reset` of any CSS property on the native guest as a runtime-only preview (`temporary: true`, no source writes). A blue **Preview** chip for active overrides is proposed, not built.
 
 ## Frontier
 
@@ -86,3 +88,4 @@ Open, unblocked, unclaimed tickets:
 | T4 | task | Locked spec and ADRs | open | G1, R1–R7 | — | [T4](tickets/T4-spec-adr.md) |
 | T2 | task | Install and verify in DSH Desktop | in_progress | P1 | lead | [T2](tickets/T2-install-verify.md) |
 | T3 | task | Docs, packaging, release, GitHub publish | in_progress | — | lead | [T3](tickets/T3-docs-release.md) |
+| B1 | task | Sidebar blank when the configured real browser is unavailable | closed | — | lead | [B1](tickets/B1-real-browser-unavailable.md) |

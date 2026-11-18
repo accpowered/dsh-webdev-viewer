@@ -2,10 +2,12 @@
 import { describe, expect, it } from 'vitest'
 import { Config, effectiveConfig } from '../../src/host/config.ts'
 import {
+  classifyBrowserFailure,
   fetchCdpVersion,
   parseCdpEndpoint,
   parseCdpWebSocketUrl,
-  realBrowserConnectionError,
+  realBrowserUnavailable,
+  remediationFor,
 } from '../../src/host/cdp-endpoint.ts'
 
 describe('real-browser configuration', () => {
@@ -84,12 +86,54 @@ describe('loopback CDP endpoints', () => {
     })).rejects.toThrow(/loopback/)
   })
 
-  it('operator explains the Chrome 136 restriction and the no-fallback rule', () => {
-    // Given a failed external-browser connection
+  it('operator gets a classified, machine-readable failure instead of a raw fetch error', () => {
+    // Given a failed external-browser connection whose cause is a refused port
     // When its operator-facing error is constructed
-    // Then it names both the browser compatibility limit and the absent fallback
+    // Then it names the stable code, the endpoint, the reason and the remediation,
+    // and the same fields ride the message as JSON for the agent
     const endpoint = parseCdpEndpoint('http://127.0.0.1:9222')
-    expect(realBrowserConnectionError(endpoint, new Error('connection refused')).message)
-      .toMatch(/Chrome 136\+.*No isolated-browser fallback was attempted/)
+    const refused = Object.assign(new TypeError('fetch failed'), {
+      cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:9222'), { code: 'ECONNREFUSED' }),
+    })
+    const failure = realBrowserUnavailable(endpoint, refused)
+    expect(failure).toMatchObject({
+      name: 'RealBrowserUnavailableError',
+      code: 'webdev.real_browser_unavailable',
+      endpoint: 'http://127.0.0.1:9222',
+      reason: 'econnrefused',
+    })
+    expect(failure.message).toContain('No isolated-browser fallback was attempted')
+    const payload = JSON.parse(failure.message.slice(failure.message.lastIndexOf('{'))) as Record<string, unknown>
+    expect(payload).toEqual({
+      code: 'webdev.real_browser_unavailable',
+      endpoint: 'http://127.0.0.1:9222',
+      reason: 'econnrefused',
+      remediation: failure.remediation,
+    })
+    expect(failure.remediation).toMatch(/Open in isolated Chromium/)
+  })
+
+  it('operator reads a stable reason for each failure class the host can tell apart', () => {
+    // Given the four failures that actually happen plus a timeout and a stranger
+    // When each is classified
+    // Then the reason is the one the panel and an agent can branch on
+    expect(classifyBrowserFailure(Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:9222'), { code: 'ECONNREFUSED' })))
+      .toBe('econnrefused')
+    expect(classifyBrowserFailure(new Error('discovery returned HTTP 404'))).toBe('not_cdp')
+    expect(classifyBrowserFailure(new Error('Chrome exited before its DevTools endpoint came up (exit code 1). The browser process was denied by the OS (crashpad/ACL). Browser output: [ERROR:crashpad_client_win.cc:431] OpenProcess: 拒绝访问。 (0x5)'))).toBe('spawn_denied')
+    expect(classifyBrowserFailure(new Error('No Chrome binary found. Set CHROME_PATH to the executable, or install Chrome.'))).toBe('not_installed')
+    expect(classifyBrowserFailure(Object.assign(new Error('opening handshake timed out'), { code: 'ETIMEDOUT' }))).toBe('timeout')
+    expect(classifyBrowserFailure(new Error('something nobody has seen before'))).toBe('unknown')
+  })
+
+  it('operator sees actionable advice for every classified reason', () => {
+    // Given each reason the wire contract defines
+    // When its remediation is rendered
+    // Then it is a non-empty sentence and never claims a silent fallback
+    for (const reason of ['econnrefused', 'not_cdp', 'spawn_denied', 'not_installed', 'timeout', 'unknown'] as const) {
+      const advice = remediationFor(reason)
+      expect(advice.length).toBeGreaterThan(20)
+      expect(advice).not.toMatch(/silently|automatically/i)
+    }
   })
 })

@@ -69,21 +69,54 @@ The current wire version stays **v1**. The input and pick commands are additive 
 - `input { event }` — one mouse/wheel/key/text event; see §5.
 - `pick { requestId, x, y }` — resolve the element at frame coordinates (panel-side fallback picker).
 - `pick-mode { enabled }` — install/toggle the page-side picker in the displayed tab. The page editor then picks clicks made in the real browser window as well as through the panel.
-- `viewport { width, height }` — render the page at the panel's content size so the frame is 1:1 instead of scaled.
-- `style { requestId, action: 'set' | 'reset' | 'reset-all', ref?, selector?, property?, value? }` — temporary style override (P4, not implemented yet).
+- `viewport { width, height, deviceScaleFactor? }` — render the page at the panel's content size so the frame is 1:1 instead of scaled. `deviceScaleFactor` is the panel's `window.devicePixelRatio` (1–3): the CSS viewport stays the panel size while captures render at that density. The frame's `width/height` stay CSS pixels; the encoded image may be larger, and a page that stops changing is upgraded to a device-scale still after `CRISP_FRAME_SETTLE_MS`.
+- `reconnect` — retry the configured source once. The user's Retry; never switches the source.
+- `open-isolated { url? }` — the user clicked "Open in isolated Chromium": switch the source to the browser the host launches itself and render the page here instead of asking for a manually started window. The new `mode` is pushed to every panel.
+- `use-configured` — forget an explicit isolated/attached source and return to the profile's configured browser.
+- `style { requestId, action: 'set' | 'reset' | 'reset-all', ref?, selector?, property?, value? }` — planned panel command for the CDP mirror; not implemented. The native style panel and `webdev_desktop_style` use `native-request` style ops instead.
 - `preview`/`run`/`stop` remain agent tools for now; the panel's actions will call the same Host methods. **TBD** whether they need panel commands.
 
 ### Events (host → panel)
 
 - `hello { state }`
-- `state { tabs, activeTabId, running, mode, cdpEndpoint?, message? }`
-- `frame { tabId, seq, width, height, data }` — base64 JPEG; latest-frame-wins.
+- `state { tabs, activeTabId, running, mode, cdpEndpoint?, message?, lastError?, attempts?, isolatedAvailable?, realBrowserConfigured? }`
+  - `lastError { code, message, at, reason?, endpoint?, remediation?, detail?, mode? }` — the classified last browser-source failure. A tab with no picture is always explainable from this field alone.
+  - `attempts` — consecutive failed starts since the last live session (absent at zero).
+  - `isolatedAvailable` — whether this host can launch an isolated Chromium; the panel only offers that action when true.
+  - `realBrowserConfigured` — a real browser is configured although the isolated one is showing; the panel offers the way back.
+- `frame { tabId, seq, width, height, data }` — base64 PNG; latest-frame-wins. `width/height` are CSS pixels and the image may carry more (the panel's `deviceScaleFactor`); the panel lays the image out at the CSS size, so picks and input keep their coordinate space.
 - `action { trace }` — one-line agent action.
 - `pick-result { requestId, element?, error? }` — element metadata; see §6.
 - `pick-mode { enabled }` — acknowledgement that the page-side picker is on/off.
 - `style-state { requestId, properties, applied }` — computed/applied values (P4, not implemented yet).
 - `logs { runId, stream: 'stdout' | 'stderr', text, at }` (runner/Electron, not implemented yet)
 - `error { code, message }`
+
+### Unreachable sources (B1)
+
+A source that cannot be reached is classified once, in the Host, and both the
+panel and the agent read the same fields:
+
+| `reason` | Meaning |
+|---|---|
+| `econnrefused` | Nothing listens on the loopback endpoint (never started, or closed). |
+| `not_cdp` | Something answers, but it is not a DevTools endpoint. |
+| `spawn_denied` | The OS refused the browser process (crashpad/ACL); the browser's own stderr rides `detail`. |
+| `not_installed` | No Chrome/Edge binary is discoverable. |
+| `timeout` | The endpoint accepted a connection but never finished the handshake. |
+| `unknown` | Anything the Host cannot classify honestly. |
+
+- A failed attach raises `RealBrowserUnavailableError`; its message ends with
+  `{ code, endpoint, reason, remediation }` as one JSON object, so a tool call is
+  branchable without parsing prose. A failed isolated launch raises the same
+  shape with `webdev.isolated_browser_unavailable`.
+- `realBrowserEnabled` still never falls back on its own. The isolated browser is
+  only selected by the explicit `open-isolated` command, and the resulting
+  `mode` is visible in the status row.
+- While a panel is open on a real browser, the Host probes the endpoint every
+  `LIVENESS_INTERVAL_MS` (1 s, one short recheck before believing a failure).
+  A closed browser becomes `webdev.real_browser_disconnected` with Reconnect; when
+  the endpoint answers again the Host re-attaches without a tool call.
 
 ### Backpressure
 
@@ -130,13 +163,13 @@ interface PickedElement {
 - Quote: `inputActions.insertQuote(text, summary)`; if it returns `false`, show an error (draft changed/locked) and keep the picks. The quote includes page URL, page version, each element's label/selector/fingerprint/box/source, and the user's note. It is **not auto-sent**.
 - **Explain/Change chips** (R6, v1 small set): `Explain this` inserts a read-only-intent quote; `Change…` pre-fills a change request. The read-only badge is derived from the tools the agent actually called, not from which chip was pressed. A v2 `viewer_pick_request` lets the agent ask the user to pick.
 
-## 7. Temporary style inspector (P4 / R7 pending)
+## 7. Temporary style inspector (P4, native guest)
 
-- Picking an element opens a compact style panel with the **common visual set**: typography (font, size, weight, line-height, color), size/opacity, spacing, layout, border/radius, effects.
-- Changes apply live as a plugin-owned temporary override (inline style or a marked `<style>`), not as source edits.
-- Each change records `property`, `before`, `after`, and the element identity. A Reset control reverts one property or all; a reload clears the overrides.
+- Picking an element opens a compact style panel with the **common visual set**: `color`, `background-color`, `font-size`, `padding`, `margin`, `border-radius`.
+- Changes apply live as a plugin-owned temporary override (`element.style.setProperty` on the native guest), not as source edits. The agent-side twin is `webdev_desktop_style { selector, action, property?, value? }`, which returns before/after values and `temporary: true`.
+- Each change records `property`, `before`, `after`, and the element identity. A Reset control removes the inline property again; a reload or navigation clears every override.
 - "Send to agent" inserts a quote with the element identity + the change list + the user's note; the plugin never writes source.
-- **TBD (R7)**: inline style vs `CSS.setStyleTexts`; source hints; multi-element shared edits; invalid value handling; pseudo-elements/media queries.
+- Scope: native guest only (the CDP mirror has no style UI). The inspector is element-scoped: a visual the page draws with a child or pseudo-element needs that element picked, which is why pseudo-element targets remain a possible follow-up.
 
 ## 8. Static preview, live reload, project runner
 
@@ -163,6 +196,15 @@ interface PickedElement {
 Base (renamed from the upstream, present in T1):
 
 `webdev_navigate`, `webdev_click`, `webdev_type`, `webdev_press`, `webdev_scroll`, `webdev_snapshot`, `webdev_screenshot`, `webdev_console`, `webdev_network`, `webdev_tabs`, `webdev_close`.
+
+Desktop family (P5, routed through the panel socket to the native guest):
+
+`webdev_desktop_navigate`, `webdev_desktop_snapshot`, `webdev_desktop_click`, `webdev_desktop_type`, `webdev_desktop_press`, `webdev_desktop_scroll`, `webdev_desktop_console`, `webdev_desktop_network`, `webdev_desktop_screenshot`, and `webdev_desktop_style { selector, action: 'get' | 'set' | 'reset', property?, value? }`.
+
+`webdev_desktop_style` is the agent-side twin of the panel style inspector: it applies inline CSS
+(`element.style.setProperty`) to the live page, returns before/after values, and marks every result
+`temporary: true`. It never writes source; a reload or navigation discards the override. A visual the
+page draws with a child or pseudo-element still needs that element picked or named.
 
 Add (P1–P3):
 

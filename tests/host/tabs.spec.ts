@@ -5,10 +5,10 @@
  * is involved and every assertion is about what the host recorded.
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_JPEG_QUALITY, DEFAULT_VIEWPORT, EVENT_RING_SIZE } from '../../src/core/protocol.ts'
 import { planScreenshot } from '../../src/core/screenshot.ts'
-import { TabManager, pushBounded, type ScreencastFrame } from '../../src/core/tabs.ts'
+import { CRISP_FRAME_SETTLE_MS, SCREENCAST_MAX_SIDE, TabManager, pushBounded, type ScreencastFrame } from '../../src/core/tabs.ts'
 import { FakeTransport } from '../helpers/fake-cdp.ts'
 
 /** One manager with a freshly created tab. */
@@ -233,6 +233,103 @@ describe('screencast', () => {
     await manager.stopScreencast('tab-1')
     expect(transport.callsOf('Page.startScreencast')).toHaveLength(1)
     expect(transport.callsOf('Page.stopScreencast')).toHaveLength(1)
+  })
+
+  it('operator gives the panel a HiDPI viewport and the captured still is rendered at that scale', async () => {
+    // Given a panel that is 1363x963 CSS pixels on a 1.5x screen
+    // When it declares that viewport
+    // Then the page keeps its CSS layout 1:1 and the capture renders at 1.5 device pixels per CSS pixel
+    const { transport, manager, frames } = await openManager()
+    await manager.setViewport('tab-1', 1363, 963, 1.5)
+
+    expect(transport.lastCall('Emulation.setDeviceMetricsOverride')?.params).toMatchObject({
+      width: 1363,
+      height: 963,
+      deviceScaleFactor: 1,
+    })
+    expect(transport.lastCall('Page.captureScreenshot')?.params).toEqual({
+      format: 'png',
+      captureBeyondViewport: false,
+      clip: { x: 0, y: 0, width: 1363, height: 963, scale: 1.5 },
+    })
+    // The wire keeps CSS pixels so picks and input keep their coordinate space.
+    expect(frames.at(-1)).toMatchObject({ width: 1363, height: 963 })
+  })
+
+  it('operator starts the screencast and the frame cap is not the old 1280x800 default', async () => {
+    // Given a panel wider than the old 1280 default
+    // When the screencast starts
+    // Then the cap is generous enough that the panel size never causes a downscale
+    const { transport, manager } = await openManager()
+    await manager.setViewport('tab-1', 1363, 963, 1)
+    await manager.startScreencast('tab-1')
+    expect(transport.lastCall('Page.startScreencast')?.params).toMatchObject({
+      format: 'png',
+      maxWidth: SCREENCAST_MAX_SIDE,
+      maxHeight: SCREENCAST_MAX_SIDE,
+    })
+  })
+
+  it('operator waits for the live frames to settle and one sharp capture replaces the soft one', async () => {
+    // Given a panel at 2x device scale with a started screencast
+    // When a live frame arrives and no newer one follows
+    // Then exactly one high-resolution capture is taken after the settle window
+    vi.useFakeTimers()
+    try {
+      const { transport, manager, frames } = await openManager()
+      await manager.setViewport('tab-1', 800, 600, 2)
+      await manager.startScreencast('tab-1')
+      const capturesBefore = transport.callsOf('Page.captureScreenshot').length
+      transport.emit('Page.screencastFrame', {
+        data: 'LIVE-FRAME',
+        sessionId: 4,
+        metadata: { deviceWidth: 800, deviceHeight: 600 },
+      }, 'session-1')
+      expect(transport.callsOf('Page.captureScreenshot')).toHaveLength(capturesBefore)
+
+      await vi.advanceTimersByTimeAsync(CRISP_FRAME_SETTLE_MS + 10)
+
+      const crisp = transport.lastCall('Page.captureScreenshot')
+      expect(crisp?.params).toMatchObject({
+        format: 'png',
+        clip: { x: 0, y: 0, width: 800, height: 600, scale: 2 },
+      })
+      expect(frames.at(-1)).toMatchObject({ width: 800, height: 600, data: 'JPEG-BASE64' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('operator gets a frame whose metadata reports device pixels and the pinned CSS size wins', async () => {
+    // Given a panel that pinned the tab to 1363x963 CSS pixels
+    // When a live frame's metadata briefly reports 2045x1445 device pixels
+    // Then the panel still receives the CSS size, so layout and input mapping stay correct
+    const { transport, manager, frames } = await openManager()
+    await manager.setViewport('tab-1', 1363, 963, 1.5)
+    await manager.startScreencast('tab-1')
+    transport.emit('Page.screencastFrame', {
+      data: 'LIVE-METADATA',
+      sessionId: 6,
+      metadata: { deviceWidth: 2045, deviceHeight: 1445 },
+    }, 'session-1')
+    expect(frames.at(-1)).toMatchObject({ width: 1363, height: 963, data: 'LIVE-METADATA' })
+  })
+
+  it('operator gets no extra capture for the settle window of a 1x panel', async () => {
+    // Given a 1x panel
+    // When a live frame arrives and the settle window passes
+    // Then no screenshot is spent: the live frame is already at native density
+    vi.useFakeTimers()
+    try {
+      const { transport, manager } = await openManager()
+      await manager.startScreencast('tab-1')
+      const capturesBefore = transport.callsOf('Page.captureScreenshot').length
+      transport.emit('Page.screencastFrame', { data: 'LIVE', sessionId: 5 }, 'session-1')
+      await vi.advanceTimersByTimeAsync(CRISP_FRAME_SETTLE_MS + 10)
+      expect(transport.callsOf('Page.captureScreenshot')).toHaveLength(capturesBefore)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

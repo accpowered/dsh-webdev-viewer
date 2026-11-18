@@ -21,6 +21,9 @@ Do **not** use the shipped `browser` kind, and do not register `rightbar` / `rig
 - `src/host/` owns Chromium/Electron CDP, tabs, tools, routes, preview server, runner, watcher, and the panel socket.
 - `src/client/` is the right-sidebar tab: frames, status, picker/style UI, logs. It never speaks CDP directly.
 - The panel is a tab, not an overlay or a central page. Keep `keepMounted: true`; do not add `position: fixed`, `main`, or `sidebar.panellist` registrations.
+- A browser source that cannot be reached is a product state, not a prose error: the host classifies the failure once (`src/host/cdp-endpoint.ts`), the state route carries `lastError { code, reason, endpoint, at, remediation }` and `attempts`, and the panel renders a zero state with Retry plus the explicit `open-isolated` / `use-configured` source actions. Keep that order — classify in the host, render in the client.
+- A real browser closed behind an open panel must become a visible `disconnected` state (`LIVENESS_INTERVAL_MS`) and must re-attach by itself when the endpoint answers; never leave a frozen frame or require a tool call to notice.
+- Style previews (`webdev_desktop_style`, the panel's style inspector) write runtime inline CSS only — never source. Every agent-visible preview result carries `temporary: true`, and a reload/navigation must discard it.
 - The client value imports must stay within the shell's frozen module table (`shared/web-platform.ts`). Cross-plugin value imports are forbidden; use Cordis services.
 - Host imports of `@deepseek-ai/*` stay external; they resolve from the DSH installation.
 

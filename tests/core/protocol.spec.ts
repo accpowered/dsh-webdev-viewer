@@ -25,6 +25,23 @@ describe('panel protocol additions', () => {
     })).toBe(true)
     expect(isBrowserViewCommand({
       v: BROWSER_VIEW_API_VERSION,
+      kind: 'viewport',
+      width: 1363,
+      height: 963,
+      deviceScaleFactor: 1.5,
+    })).toBe(true)
+    expect(isBrowserViewCommand({
+      v: BROWSER_VIEW_API_VERSION,
+      kind: 'reconnect',
+    })).toBe(true)
+    expect(isBrowserViewCommand({
+      v: BROWSER_VIEW_API_VERSION,
+      kind: 'open-isolated',
+      url: 'https://cn.bing.com/',
+    })).toBe(true)
+    expect(isBrowserViewCommand({ v: BROWSER_VIEW_API_VERSION, kind: 'use-configured' })).toBe(true)
+    expect(isBrowserViewCommand({
+      v: BROWSER_VIEW_API_VERSION,
       kind: 'pick-mode',
       enabled: true,
     })).toBe(true)
@@ -54,6 +71,20 @@ describe('panel protocol additions', () => {
       kind: 'viewport',
       width: 0,
       height: 800,
+    })).toBe(false)
+    expect(isBrowserViewCommand({
+      v: BROWSER_VIEW_API_VERSION,
+      kind: 'viewport',
+      width: 800,
+      height: 600,
+      deviceScaleFactor: 4,
+    })).toBe(false)
+    expect(isBrowserViewCommand({
+      v: BROWSER_VIEW_API_VERSION,
+      kind: 'viewport',
+      width: 800,
+      height: 600,
+      deviceScaleFactor: Number.NaN,
     })).toBe(false)
   })
 

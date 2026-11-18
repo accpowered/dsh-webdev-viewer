@@ -23,14 +23,22 @@
 
 import { CdpClient } from '../core/cdp.ts'
 import type { CdpConnectOptions, CdpTransport } from '../core/cdp.ts'
-import { ChromeProcess } from '../core/chrome.ts'
+import { ChromeProcess, resolveChromePath } from '../core/chrome.ts'
 import { TabManager, type ScreencastFrame } from '../core/tabs.ts'
 import { buildSnapshot, type SnapshotResult } from '../core/snapshot.ts'
 import { planScreenshot, type ScreenshotPlan, type ScreenshotRequest } from '../core/screenshot.ts'
 import { dispatchInput } from '../core/input.ts'
 import { pickElement } from '../core/pick.ts'
 import { DOCUMENT_TEXT_EXPRESSION, isAuthChallengeText, isLoopbackTarget } from './auth.ts'
-import { fetchCdpVersion, parseCdpEndpoint, realBrowserConnectionError } from './cdp-endpoint.ts'
+import {
+  classifyBrowserFailure,
+  fetchCdpVersion,
+  parseCdpEndpoint,
+  probeCdpEndpoint,
+  realBrowserUnavailable,
+  remediationFor,
+} from './cdp-endpoint.ts'
+import type { CdpEndpoint } from './cdp-endpoint.ts'
 import {
   clickElement,
   navigateTo,
@@ -43,9 +51,14 @@ import {
 import {
   DEFAULT_JPEG_QUALITY,
   DEFAULT_VIEWPORT,
+  ISOLATED_BROWSER_UNAVAILABLE_CODE,
+  PANEL_NOT_MOUNTED_CODE,
+  REAL_BROWSER_DISCONNECTED_CODE,
   SNAPSHOT_NODE_LIMIT,
   type BrowserActionTrace,
   type BrowserConsoleEntry,
+  type BrowserFailure,
+  type BrowserFailureReason,
   type BrowserNetworkEntry,
   type BrowserPanelState,
   type BrowserPickedElement,
@@ -143,13 +156,38 @@ export interface BrowserViewServiceOptions {
   idleCloseDays?: () => number
   /** How often the idle sweep runs; zero disables it. @default IDLE_SWEEP_INTERVAL_MS */
   sweepIntervalMs?: number
+  /**
+   * How often an attached panel checks that its real browser still answers;
+   * zero disables the watch. The production loader enables it: a browser closed
+   * mid-session must become a visible disconnect. @default 0
+   */
+  livenessIntervalMs?: number
+  /**
+   * One discovery probe for the liveness watch. Injected by tests so the watch
+   * is exercised without a browser. @default a bounded `/json/version` GET
+   */
+  livenessProbe?: (endpoint: CdpEndpoint) => Promise<boolean>
+  /**
+   * Whether an isolated Chromium could be launched on this host, reported to
+   * the panel so it only offers that action when it can work.
+   * @default a one-time probe of the installed browser binaries
+   */
+  chromeAvailable?: () => boolean
   /** Browser factory, replaced by tests. */
   openSession?: (options: OpenSessionOptions) => Promise<BrowserSession>
 }
 
 /** Start the default isolated Chrome and wrap it in a session. */
 async function openIsolatedSession(options: OpenSessionOptions): Promise<BrowserSession> {
-  const chrome = await ChromeProcess.launch({ viewport: options.viewport })
+  let chrome: ChromeProcess
+  try {
+    chrome = await ChromeProcess.launch({ viewport: options.viewport })
+  } catch (error) {
+    // A refused launch (crashpad/ACL, a locked profile, no binary) is the one
+    // place the browser's own explanation exists, so it is classified here and
+    // carried into both the tool error and the panel's lastError.
+    throw new IsolatedBrowserUnavailableError(classifyBrowserFailure(error), error)
+  }
   let cdp: CdpClient
   let unbindExit: (() => void) | undefined
   try {
@@ -190,8 +228,114 @@ async function openIsolatedSession(options: OpenSessionOptions): Promise<Browser
  */
 export const REAL_BROWSER_HANDSHAKE_TIMEOUT_MS = 5_000
 
+/**
+ * How often an attached panel checks that its real browser is still there.
+ *
+ * The panel is the product: a browser closed behind it must turn into a
+ * visible disconnect with a Reconnect control, not a frozen frame. One second
+ * is short enough to notice within the two seconds the contract promises and
+ * cheap enough that the `/json/version` GET is noise.
+ */
+export const LIVENESS_INTERVAL_MS = 1_000
+
+/** Deadline for one liveness discovery probe. */
+export const LIVENESS_PROBE_TIMEOUT_MS = 750
+
+/**
+ * Pause before a failed liveness probe is believed.
+ *
+ * A browser under load can miss one 750 ms discovery GET without being gone;
+ * one short recheck keeps a busy page from being torn down, and the pair still
+ * settles well inside the two-second detection budget.
+ */
+export const LIVENESS_RECHECK_DELAY_MS = 250
+
 /** One day in milliseconds: the unit the idle-close window is configured in. */
 const DAY_MS = 24 * 60 * 60 * 1000
+
+/** Sleep for `ms`; used by the liveness recheck and kept unref'd by its timer. */
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>(resolve => {
+    const timer = setTimeout(resolve, ms)
+    const unref = (timer as unknown as { unref?: () => void }).unref
+    if (typeof unref === 'function') unref.call(timer)
+  })
+}
+
+/**
+ * Sentence a desktop tool call gets when no panel owns the desktop guest.
+ *
+ * The code prefix is what an agent branches on; the sentence says what to do.
+ * It is thrown immediately — the old path sent the request to a socket that was
+ * already gone and waited thirty seconds for an answer (#B1-a).
+ */
+const PANEL_NOT_MOUNTED_MESSAGE =
+  `${PANEL_NOT_MOUNTED_CODE}: no mounted WebDev Viewer panel owns the desktop view. `
+  + 'Open the WebDev Viewer tab in the right sidebar (or switch it back to the desktop browser) and retry.'
+
+/**
+ * The classified-failure shape a thrown error may carry.
+ *
+ * A failed source is reported twice: as the thrown tool error (prose plus a
+ * JSON line the model can branch on) and as `state.lastError` (short sentence,
+ * reason, remediation, detail) for the panel and the route. Both carriers share
+ * these fields, so the service does not need to know which class produced them.
+ */
+interface ClassifiedSourceFailure extends Error {
+  readonly code: string
+  readonly reason: BrowserFailureReason
+  readonly remediation: string
+  readonly panelMessage: string
+  readonly endpoint?: string
+}
+
+/**
+ * Narrow an error to the classified shape.
+ * @param error - whatever a session factory threw.
+ * @returns the fields, or undefined when the error was not classified.
+ */
+function asClassifiedFailure(error: unknown): ClassifiedSourceFailure | undefined {
+  if (!(error instanceof Error)) return undefined
+  const candidate = error as Partial<ClassifiedSourceFailure>
+  if (typeof candidate.code !== 'string' || candidate.code === '') return undefined
+  if (typeof candidate.reason !== 'string') return undefined
+  if (typeof candidate.remediation !== 'string' || typeof candidate.panelMessage !== 'string') return undefined
+  return candidate as ClassifiedSourceFailure
+}
+
+/**
+ * A failed launch of the isolated browser the viewer owns.
+ *
+ * The message carries the browser's own explanation (crashpad, a locked
+ * profile, a missing binary) and the machine-readable fields, so a tool call
+ * can tell "not installed" from "the OS denied the process" without parsing
+ * prose.
+ */
+class IsolatedBrowserUnavailableError extends Error {
+  readonly code = ISOLATED_BROWSER_UNAVAILABLE_CODE
+  readonly reason: BrowserFailureReason
+  readonly remediation: string
+  readonly panelMessage: string
+
+  /**
+   * @param reason - classified launch cause.
+   * @param cause - what `ChromeProcess.launch` threw.
+   */
+  constructor(reason: BrowserFailureReason, cause: unknown) {
+    const remediation = remediationFor(reason)
+    const raw = cause instanceof Error ? cause.message : String(cause)
+    super(
+      `${ISOLATED_BROWSER_UNAVAILABLE_CODE}: could not start the isolated browser (${reason}). `
+        + `${raw} ${remediation} `
+        + JSON.stringify({ code: ISOLATED_BROWSER_UNAVAILABLE_CODE, reason, remediation }),
+      { cause },
+    )
+    this.name = 'IsolatedBrowserUnavailableError'
+    this.reason = reason
+    this.remediation = remediation
+    this.panelMessage = `The isolated browser could not start (${reason}).`
+  }
+}
 
 /**
  * How often the service looks for tabs that went idle.
@@ -248,7 +392,7 @@ export async function openExternalSession(
   } catch (error) {
     if (tabs !== undefined) await tabs.dispose().catch(() => undefined)
     cdp?.close()
-    throw realBrowserConnectionError(endpoint, error)
+    throw realBrowserUnavailable(endpoint, error)
   }
 }
 
@@ -269,9 +413,22 @@ export class BrowserViewService implements BrowserViewBackend {
   private readonly resolveConfig: () => BrowserConnectionConfig
   private readonly authenticatedUrl: BrowserViewServiceOptions['authenticatedUrl']
   private manualEndpoint: string | undefined
+  /**
+   * The isolated browser a person explicitly asked for while the configured
+   * source is the real one. This is the recorded "Open in isolated Chromium"
+   * choice: it makes the status row's mode honest instead of silently switching
+   * carriers, and {@link useConfigured} is the way back.
+   */
+  private manualMode: 'isolated' | undefined
   private readonly idleCloseDays: () => number
   private readonly sweepIntervalMs: number
   private idleTimer: ReturnType<typeof setInterval> | undefined
+  private readonly livenessIntervalMs: number
+  private readonly livenessProbe: (endpoint: CdpEndpoint) => Promise<boolean>
+  private readonly chromeAvailable: () => boolean
+  private livenessTimer: ReturnType<typeof setInterval> | undefined
+  /** One in-flight liveness check, so a slow probe never stacks up. */
+  private probing = false
   private readonly sinks = new Set<BrowserViewSink>()
   private readonly bindings = new Map<string, string>()
   /**
@@ -308,7 +465,10 @@ export class BrowserViewService implements BrowserViewBackend {
   private selectionPinned = false
   private opening: Promise<BrowserSession> | undefined
   private openingTab: Promise<BrowserTabView> | undefined
-  private lastError: string | undefined
+  /** Classified last browser-source failure; what a blank tab is explained by. */
+  private lastFailure: BrowserFailure | undefined
+  /** Consecutive failed starts since the last live session. */
+  private failedAttempts = 0
   private generation = 0
   private disposed = false
 
@@ -321,9 +481,13 @@ export class BrowserViewService implements BrowserViewBackend {
     this.now = options.now ?? Date.now
     this.openSession = options.openSession ?? openConfiguredSession
     this.configuredConfig = options.resolveConfig ?? (() => ({ mode: 'isolated' }))
-    this.resolveConfig = () => this.manualEndpoint === undefined
-      ? this.configuredConfig()
-      : { mode: 'cdp', cdpEndpoint: this.manualEndpoint }
+    this.resolveConfig = () => {
+      // An explicit attach wins, then a person's explicit isolated choice, and
+      // only then the profile configuration: no source is ever picked silently.
+      if (this.manualEndpoint !== undefined) return { mode: 'cdp', cdpEndpoint: this.manualEndpoint }
+      if (this.manualMode !== undefined) return { mode: this.manualMode }
+      return this.configuredConfig()
+    }
     this.authenticatedUrl = options.authenticatedUrl
     this.idleCloseDays = options.idleCloseDays ?? (() => 0)
     this.sweepIntervalMs = options.sweepIntervalMs ?? IDLE_SWEEP_INTERVAL_MS
@@ -337,6 +501,18 @@ export class BrowserViewService implements BrowserViewBackend {
       if (typeof unref === 'function') unref.call(timer)
       this.idleTimer = timer
     }
+    this.livenessIntervalMs = options.livenessIntervalMs ?? 0
+    this.livenessProbe = options.livenessProbe
+      ?? (endpoint => probeCdpEndpoint(endpoint, { timeoutMs: LIVENESS_PROBE_TIMEOUT_MS }))
+    this.chromeAvailable = options.chromeAvailable ?? (() => resolveChromePath() !== undefined)
+    if (this.livenessIntervalMs > 0) {
+      const timer: ReturnType<typeof setInterval> = setInterval(() => {
+        void this.checkLiveness().catch(() => undefined)
+      }, this.livenessIntervalMs)
+      const unref = (timer as unknown as { unref?: () => void }).unref
+      if (typeof unref === 'function') unref.call(timer)
+      this.livenessTimer = timer
+    }
   }
 
   /** Whether a browser is currently running with an open transport. */
@@ -347,6 +523,7 @@ export class BrowserViewService implements BrowserViewBackend {
   /** The current panel-facing state; safe to call before anything started. */
   state(): BrowserPanelState {
     const config = this.resolveConfig()
+    const configured = this.configuredConfig()
     const live = this.session !== undefined && !this.session.transport.closed ? this.session : undefined
     const state: BrowserPanelState = {
       tabs: live?.tabs.list() ?? [],
@@ -355,14 +532,34 @@ export class BrowserViewService implements BrowserViewBackend {
       mode: config.mode,
     }
     if (config.mode === 'cdp' && config.cdpEndpoint !== undefined) {
-      try {
-        state.cdpEndpoint = parseCdpEndpoint(config.cdpEndpoint).baseUrl
-      } catch {
-        state.cdpEndpoint = config.cdpEndpoint
-      }
+      state.cdpEndpoint = this.endpointLabel(config.cdpEndpoint)
+      // Only a host that can really launch the isolated browser may offer it.
+      state.isolatedAvailable = this.chromeAvailable()
     }
-    if (this.lastError !== undefined) state.message = this.lastError
+    // A person overrode a configured real browser with the isolated one: the
+    // panel needs the way back to be discoverable in its zero state.
+    if (configured.mode === 'cdp' && config.mode !== 'cdp') state.realBrowserConfigured = true
+    if (this.lastFailure !== undefined) {
+      state.lastError = this.lastFailure
+      // Kept for older panels: the same sentence the classified field carries.
+      state.message = this.lastFailure.message
+    }
+    if (this.failedAttempts > 0) state.attempts = this.failedAttempts
     return state
+  }
+
+  /**
+   * The normalized loopback origin for display, or the raw string when it does
+   * not parse. Never throws: the panel must be able to render a bad endpoint.
+   * @param raw - configured endpoint.
+   * @returns the origin, or the input.
+   */
+  private endpointLabel(raw: string): string {
+    try {
+      return parseCdpEndpoint(raw).baseUrl
+    } catch {
+      return raw
+    }
   }
 
   /**
@@ -378,6 +575,11 @@ export class BrowserViewService implements BrowserViewBackend {
     void this.startStreaming().catch(() => undefined)
     return () => {
       this.sinks.delete(sink)
+      // A socket that goes away takes the native guest with it. Leaving the
+      // dead sink registered is what made every later webdev_desktop_* call
+      // wait for an answer that could never arrive (#B1-a): fail it now, with
+      // the reason, and let the next mounted panel claim the guest.
+      if (this.nativeSink === sink) this.rejectNativeRequests(PANEL_NOT_MOUNTED_MESSAGE)
       if (this.sinks.size === 0) void this.stopStreaming()
     }
   }
@@ -454,7 +656,7 @@ export class BrowserViewService implements BrowserViewBackend {
           const tabId = this.displayedOrDefault()
           if (tabId === null) return
           const tabs = await this.requireTabs()
-          await tabs.setViewport(tabId, command.width, command.height)
+          await tabs.setViewport(tabId, command.width, command.height, command.deviceScaleFactor ?? 1)
           return
         }
         case 'pick-mode': {
@@ -464,6 +666,23 @@ export class BrowserViewService implements BrowserViewBackend {
           await tabs.installPagePicker(tabId)
           await tabs.setPagePickerEnabled(tabId, command.enabled)
           sink.send({ v: 1, kind: 'pick-mode', enabled: command.enabled })
+          return
+        }
+        case 'reconnect': {
+          // The user's Retry: same source, one fresh attempt. Never a mode change.
+          await this.reconnect()
+          return
+        }
+        case 'open-isolated': {
+          // Explicit, user-initiated source switch; the state push carries the
+          // new mode, so no fallback ever happens behind the user's back. The
+          // URL the panel was showing travels with the click so the page keeps
+          // rendering here instead of in a second browser window.
+          await this.openIsolated(command.url)
+          return
+        }
+        case 'use-configured': {
+          await this.useConfigured()
           return
         }
         case 'native-attach': {
@@ -578,7 +797,9 @@ export class BrowserViewService implements BrowserViewBackend {
   private async nativeRequest(op: string, args: unknown, timeoutMs = 30_000): Promise<unknown> {
     const sink = this.nativeSink
     if (sink === undefined) {
-      throw new Error('the desktop view is not attached; open WebDev Viewer and use the desktop surface')
+      // Immediate, explicit failure. Sending it anyway is what used to wait the
+      // whole deadline for a panel that was never there (#B1-a).
+      throw new Error(PANEL_NOT_MOUNTED_MESSAGE)
     }
     const requestId = `native-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     return await new Promise<unknown>((resolve, reject) => {
@@ -747,6 +968,51 @@ export class BrowserViewService implements BrowserViewBackend {
         && typeof (entry as Record<string, unknown>).text === 'string'
         && typeof (entry as Record<string, unknown>).at === 'number'
     }).slice(-limit)
+  }
+
+  /**
+   * Read style values for one element in the native guest.
+   *
+   * The panel answers with the authored inline value when the element has one,
+   * otherwise with the computed value — the same value its style panel shows.
+   * @param selector - CSS selector of the element.
+   * @param properties - CSS properties to read, in order.
+   * @returns property to value, as the page reported it.
+   */
+  async nativeStyle(selector: string, properties: readonly string[]): Promise<Record<string, string>> {
+    const raw = await this.nativeRequest('style-get', { selector, properties: [...properties] })
+    if (typeof raw !== 'object' || raw === null) throw new Error('the desktop page did not return style values')
+    const values: Record<string, string> = {}
+    for (const [property, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof value === 'string') values[property] = value
+    }
+    return values
+  }
+
+  /**
+   * Apply one temporary inline style in the native guest.
+   *
+   * This is the same `element.style.setProperty` the panel's style inspector
+   * uses: the live page changes, no source file is touched, and a reload or
+   * navigation discards it.
+   * @param selector - CSS selector of the element.
+   * @param property - CSS property.
+   * @param value - CSS value.
+   */
+  async nativeStyleSet(selector: string, property: string, value: string): Promise<void> {
+    await this.nativeRequest('style-set', { selector, property, value })
+  }
+
+  /**
+   * Drop one temporary inline style again in the native guest.
+   *
+   * Removing the inline property reveals whatever the page's own stylesheet
+   * says, which is what the panel's Reset does.
+   * @param selector - CSS selector of the element.
+   * @param property - CSS property.
+   */
+  async nativeStyleReset(selector: string, property: string): Promise<void> {
+    await this.nativeRequest('style-reset', { selector, property })
   }
 
   /**
@@ -1318,10 +1584,164 @@ export class BrowserViewService implements BrowserViewBackend {
     this.generation += 1
     this.opening = undefined
     const session = this.forgetSession()
-    this.lastError = undefined
+    this.lastFailure = undefined
+    this.failedAttempts = 0
     if (session !== undefined) await session.dispose()
     this.broadcast({ v: 1, kind: 'state', state: this.state() })
     if (this.sinks.size > 0) await this.startStreaming().catch(() => undefined)
+  }
+
+  /**
+   * Retry the configured browser source once, for the panel's Retry control.
+   *
+   * The mode never changes here: a real-browser configuration that is still
+   * unreachable reports the same classified failure with one more attempt,
+   * instead of quietly becoming something else. Failures are recorded rather
+   * than thrown, because this runs from a panel command whose result is a state
+   * push.
+   * @returns the state after the attempt.
+   */
+  async reconnect(): Promise<BrowserPanelState> {
+    if (this.disposed) return this.state()
+    this.generation += 1
+    this.opening = undefined
+    const session = this.forgetSession()
+    if (session !== undefined) await session.dispose().catch(() => undefined)
+    this.broadcast({ v: 1, kind: 'state', state: this.state() })
+    try {
+      await this.requireSession()
+      await this.startStreaming().catch(() => undefined)
+    } catch {
+      // startSession recorded the classified failure and broadcast it.
+    }
+    this.broadcast({ v: 1, kind: 'state', state: this.state() })
+    return this.state()
+  }
+
+  /**
+   * Switch to the isolated Chromium the viewer launches itself.
+   *
+   * This is the one sanctioned way around "the real browser must be started by
+   * hand": a person clicked it, the mode change is pushed to every panel, and
+   * the status row names the carrier. It is never chosen automatically. When
+   * the panel sends the page it was showing, that page is opened in the new
+   * browser, so recovery restores the view instead of handing back an empty
+   * panel.
+   * @param url - page to open once the isolated browser is up.
+   * @returns the state after the attempt, including a classified launch failure.
+   */
+  async openIsolated(url?: string): Promise<BrowserPanelState> {
+    if (this.disposed) return this.state()
+    this.manualMode = 'isolated'
+    this.manualEndpoint = undefined
+    await this.reconfigure()
+    try {
+      await this.requireSession()
+      await this.startStreaming().catch(() => undefined)
+    } catch {
+      // startSession recorded the classified launch failure and broadcast it.
+    }
+    if (url !== undefined && url !== '' && this.session !== undefined) {
+      // An unbound tab: the person asked for this page, not for an agent's tab.
+      await this.navigate(undefined, url)
+    }
+    this.broadcast({ v: 1, kind: 'state', state: this.state() })
+    return this.state()
+  }
+
+  /**
+   * Forget any explicit source and go back to the configured browser.
+   * @returns the state after the switch.
+   */
+  async useConfigured(): Promise<BrowserPanelState> {
+    if (this.disposed) return this.state()
+    this.manualMode = undefined
+    this.manualEndpoint = undefined
+    await this.reconfigure()
+    return this.state()
+  }
+
+  /**
+   * Notice that the attached real browser went away, and recover when it returns.
+   *
+   * Only runs while a panel is watching: a host nobody is looking at must not
+   * poll a port or reopen a browser. One discovery GET after the fact, with one
+   * short recheck, is what keeps a busy browser from being declared dead. When
+   * the session is gone the check keeps probing and attaches again as soon as
+   * the endpoint answers, so a restarted browser needs no agent turn and no
+   * click; until then the panel shows the classified disconnect and Reconnect.
+   * @returns once the check settled; never throws.
+   */
+  async checkLiveness(): Promise<void> {
+    if (this.disposed || this.probing || this.sinks.size === 0) return
+    const config = this.resolveConfig()
+    if (config.mode !== 'cdp' || config.cdpEndpoint === undefined) return
+    const endpoint = config.cdpEndpoint
+    this.probing = true
+    try {
+      const session = this.session
+      if (session !== undefined && !session.transport.closed) {
+        if (await this.endpointAnswers(endpoint)) return
+        await sleep(LIVENESS_RECHECK_DELAY_MS)
+        if (await this.endpointAnswers(endpoint)) return
+        await this.dropDisconnected(session, endpoint)
+        return
+      }
+      if (session !== undefined) {
+        // The transport already closed: the browser is gone whatever a probe
+        // says, so report it immediately instead of leaving a frozen picture.
+        await this.dropDisconnected(session, endpoint)
+        return
+      }
+      // No session: recover from a shown failure only once something answers.
+      if (this.lastFailure === undefined) return
+      if (!(await this.endpointAnswers(endpoint))) return
+      try {
+        await this.requireSession()
+        await this.startStreaming().catch(() => undefined)
+      } catch {
+        // startSession recorded the fresh failure; the next tick retries.
+      }
+    } finally {
+      this.probing = false
+    }
+  }
+
+  /**
+   * Whether the configured endpoint's discovery document answers right now.
+   * @param raw - configured loopback endpoint.
+   * @returns true when the probe saw a usable document.
+   */
+  private async endpointAnswers(raw: string): Promise<boolean> {
+    let endpoint: CdpEndpoint
+    try {
+      endpoint = parseCdpEndpoint(raw)
+    } catch {
+      return false
+    }
+    try {
+      return await this.livenessProbe(endpoint)
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Record one real-browser disconnect and drop its session.
+   *
+   * The failed browser is only detached: its pages belong to the person, so
+   * dropping the viewer must never close them.
+   * @param session - the session that went away.
+   * @param endpoint - the endpoint it was attached to.
+   */
+  private async dropDisconnected(session: BrowserSession, endpoint: string): Promise<void> {
+    if (this.session !== session) return
+    const stale = this.forgetSession()
+    const message = `The real browser at ${this.endpointLabel(endpoint)} closed or stopped answering; the viewer is disconnected.`
+    const failure = this.recordFailure(new Error(message), REAL_BROWSER_DISCONNECTED_CODE, 'cdp', endpoint, 'econnrefused')
+    this.broadcast({ v: 1, kind: 'state', state: this.state() })
+    this.broadcast({ v: 1, kind: 'error', code: 'browser-disconnected', message: failure.message })
+    await stale?.dispose().catch(() => undefined)
   }
 
   /**
@@ -1339,14 +1759,16 @@ export class BrowserViewService implements BrowserViewBackend {
   async attachEndpoint(endpoint: string): Promise<BrowserPanelState> {
     const parsed = parseCdpEndpoint(endpoint)
     this.manualEndpoint = parsed.baseUrl
+    this.manualMode = undefined
     await this.reconfigure()
     await this.requireSession()
     return this.state()
   }
 
-  /** Forget an explicit attach and return to the configured browser source. */
+  /** Forget an explicit attach or isolated choice and return to the configured browser source. */
   async detachEndpoint(): Promise<void> {
     this.manualEndpoint = undefined
+    this.manualMode = undefined
     await this.reconfigure()
     if (this.sinks.size > 0) await this.requireSession()
   }
@@ -1363,6 +1785,10 @@ export class BrowserViewService implements BrowserViewBackend {
       clearInterval(this.idleTimer)
       this.idleTimer = undefined
     }
+    if (this.livenessTimer !== undefined) {
+      clearInterval(this.livenessTimer)
+      this.livenessTimer = undefined
+    }
     this.generation += 1
     this.opening = undefined
     // Stop broadcasting first: a panel must not receive a frame from a browser
@@ -1376,6 +1802,7 @@ export class BrowserViewService implements BrowserViewBackend {
         // A socket that is already gone needs no second close.
       }
     }
+    this.rejectNativeRequests(PANEL_NOT_MOUNTED_MESSAGE)
     const session = this.forgetSession()
     if (session !== undefined) await session.dispose()
   }
@@ -1512,21 +1939,79 @@ export class BrowserViewService implements BrowserViewBackend {
         session = await attemptOpen()
       }
       this.session = session
-      this.lastError = undefined
+      this.lastFailure = undefined
+      this.failedAttempts = 0
       this.broadcast({ v: 1, kind: 'state', state: this.state() })
       return session
     } catch (error) {
       if (generation === this.generation && !this.disposed) {
-        this.lastError = error instanceof Error ? error.message : String(error)
+        const failure = this.recordFailure(
+          error,
+          config.mode === 'cdp' ? 'browser-connect-failed' : ISOLATED_BROWSER_UNAVAILABLE_CODE,
+          config.mode,
+          config.mode === 'cdp' ? config.cdpEndpoint : undefined,
+        )
+        // A state push is what makes the failure visible to a panel that is not
+        // reading the error event (or was not attached when it fired). The
+        // error event stays last so a listener that ends on it still sees it.
+        this.broadcast({ v: 1, kind: 'state', state: this.state() })
         this.broadcast({
           v: 1,
           kind: 'error',
           code: config.mode === 'cdp' ? 'browser-connect-failed' : 'browser-launch-failed',
-          message: this.lastError,
+          message: failure.message,
         })
       }
       throw error
     }
+  }
+
+  /**
+   * Record one classified browser-source failure for the panel and the route.
+   *
+   * The message is kept verbatim, because it is the sentence the person reads:
+   * a spawn failure carries the browser's own crashpad text there. The reason,
+   * endpoint and remediation are added only as far as the host really knows
+   * them, so nothing is invented for a failure it could not classify.
+   * @param error - what the connect or launch path threw.
+   * @param fallbackCode - stable code used when the error carries none.
+   * @param mode - source the failure belongs to.
+   * @param endpoint - endpoint that was tried, when the source was a CDP one.
+   * @param reason - classified cause when the caller already knows it.
+   * @returns the recorded failure.
+   */
+  private recordFailure(
+    error: unknown,
+    fallbackCode: string,
+    mode: BrowserMode,
+    endpoint?: string,
+    reason?: BrowserFailureReason,
+  ): BrowserFailure {
+    this.failedAttempts += 1
+    const classified = asClassifiedFailure(error)
+    const raw = error instanceof Error ? error.message : String(error)
+    const resolvedReason = reason ?? classified?.reason ?? classifyBrowserFailure(error)
+    const failure: BrowserFailure = {
+      code: classified?.code ?? fallbackCode,
+      // A classified error's message is written for a tool call: it carries the
+      // machine-readable JSON, which a panel should not render. The panel and
+      // the route get one short sentence, the remediation as its own field, and
+      // the genuine underlying text as `detail`.
+      message: classified === undefined ? raw : classified.panelMessage,
+      at: this.now(),
+      mode,
+      reason: resolvedReason,
+      remediation: classified?.remediation ?? remediationFor(resolvedReason),
+    }
+    if (classified !== undefined) {
+      if (classified.endpoint !== undefined) failure.endpoint = classified.endpoint
+      const cause = classified.cause instanceof Error ? classified.cause.message : undefined
+      if (cause !== undefined && cause !== '') failure.detail = cause
+    } else if (endpoint !== undefined) {
+      failure.endpoint = this.endpointLabel(endpoint)
+    }
+    this.lastFailure = failure
+    return failure
   }
 
   /** Start the screencast for the tab the panel watches. */
@@ -1625,10 +2110,13 @@ export class BrowserViewService implements BrowserViewBackend {
     return session.tabs.list().find(tab => tab.id === tabId) ?? { id: tabId, url: '', title: '', loading: false }
   }
 
-  /** Report a failure to the panels without throwing at the caller. */
+  /** Report a transient command failure to the panels without throwing at the caller. */
   private fail(code: string, error: unknown): void {
     const message = error instanceof Error ? error.message : String(error)
-    this.lastError = message
+    // Deliberately not recorded as lastFailure: a refused panel command (a
+    // tab another session owns, a pick that missed) says nothing about whether
+    // the browser source is reachable, and replacing the zero state's reason
+    // with it would explain the wrong thing.
     this.broadcast({ v: 1, kind: 'error', code, message })
   }
 }
