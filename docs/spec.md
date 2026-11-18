@@ -86,9 +86,9 @@ The current wire version stays **v1**. The input and pick commands are additive 
   - `attempts` — consecutive failed starts since the last live session (absent at zero).
   - `isolatedAvailable` — whether this host can launch an isolated Chromium; the panel only offers that action when true.
   - `realBrowserConfigured` — a real browser is configured although the isolated one is showing; the panel offers the way back.
-  - `preview { active, count }` — temporary runtime style overrides are applied to the visible page. The status row keeps the connection state (`Live`) and adds a blue **Preview** chip; reload/navigation/reset/detach clears it.
+  - `preview { active, count, elements }` — temporary runtime style overrides are applied to the visible page. `count` is the number of distinct elements in `elements` (selector + relation). The status row keeps the connection state (`Live`) and shows a permanent document-state marker in the same style: gray dot + **Original**, or blue dot + **Preview (n)** while overrides are active; hovering the marker draws a translucent box around each element. Reload/navigation/reset/detach clears it.
 - `frame { tabId, seq, width, height, data }` — base64 PNG; latest-frame-wins. `width/height` are CSS pixels and the image may carry more (the panel's `deviceScaleFactor`); the panel lays the image out at the CSS size, so picks and input keep their coordinate space.
-- `action { trace }` — one-line agent action.
+- `action { trace }` — one-line agent action. `tone: 'preview'` marks a temporary style adjustment (agent tool or panel inspector); the footer renders those rows in the Preview blue and the summary carries a compact before→after.
 - `pick-result { requestId, element?, error? }` — element metadata; see §6.
 - `pick-mode { enabled }` — acknowledgement that the page-side picker is on/off.
 - `style-state { requestId, properties, applied }` — computed/applied values (P4, not implemented yet).
@@ -173,7 +173,8 @@ interface PickedElement {
 - Each change records `property`, `before`, `after`, and the element identity. A Reset control removes the inline property again; a reload or navigation clears every override.
 - "Send to agent" inserts a quote with the element identity + the change list + the user's note; the plugin never writes source.
 - Scope: native guest only (the CDP mirror has no style UI). The inspector is element-scoped: a visual the page draws with a child or pseudo-element needs that element picked. The agent tool goes further — `relation: parent`, `pseudo: ::before | ::after`, and `action: inspect` (probes self, parent and both pseudo-elements) — so a composite widget can be diagnosed and changed on the layer that really draws it. Pseudo overrides are one marked stylesheet rule, removed on reset/reload.
-- While any override is active the panel shows a blue **Preview** chip beside the connection state; the host state exposes `preview { active, count }`. The chip clears on reset, reload, navigation, detach, or source reconfigure.
+- While any override is active the status row shows a blue **Preview (n)** marker beside Live; when none is active it shows a gray **Original** marker (same dot/size/muted text, no border). `n` counts distinct elements (selector + relation), and hovering the marker draws a translucent DevTools-style box around each of them via a closed shadow root; the overlay never touches page styles or the DOM snapshot. The host state exposes `preview { active, count, elements }`; the marker clears on reset, reload, navigation, detach, or source reconfigure.
+- Every adjustment also emits one `action` trace with `tone: 'preview'` (tool `style`, compact before→after), which the footer draws in the Preview blue. The panel inspector debounces keystrokes into one line per adjustment; Reset all is one line; the agent tool emits one line per set/reset.
 
 ## 8. Static preview, live reload, project runner
 

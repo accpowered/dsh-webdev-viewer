@@ -182,26 +182,47 @@
   color: var(--dsw-alias-label-secondary);
 }
 
-/* Temporary style overrides: a blue chip next to the connection state, never a
-   replacement for it — the page is still Live; its document is just unsaved. */
-.previewChip {
+/* Document state: a permanent partner to the connection marker, with the same
+   text size and a 10px dot slot (6px core) as StateDot. Text is always the
+   muted label color; only the dot changes: neutral for the original document,
+   brand blue while temporary style overrides are active. No border/background. */
+.documentState {
   display: inline-flex;
   flex: none;
   align-items: center;
   gap: 4px;
-  padding: 0 6px;
-  color: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-label-tertiary);
   font: var(--dsw-font-xxxs-11);
   line-height: 16px;
-  border: 0.5px solid var(--dsw-alias-brand-primary);
-  border-radius: 8px;
+  white-space: nowrap;
 }
 
-.previewDot {
-  width: 6px;
-  height: 6px;
-  background: var(--dsw-alias-brand-primary);
+/* Same geometry as StateDot (10px slot, 20% inset core) so the document marker
+   lines up with the Live dot. Colors are literal so the neutral state is truly
+   gray and the preview state is truly blue in every theme (the theme's brand
+   token is near-black on this desktop theme). */
+.stateDot {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 10px;
+  height: 10px;
+}
+
+.stateDot::after {
+  content: '';
+  position: absolute;
+  inset: 20%;
   border-radius: 50%;
+  background: currentColor;
+}
+
+.stateDotMuted {
+  color: #9aa0a6;
+}
+
+.stateDotPreview {
+  color: #0f6cbd;
 }
 
 /* The mode chip doubles as the way back to the configured source when a
@@ -526,6 +547,14 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Temporary style adjustments read in the same blue as the Preview dot, so the
+   footer distinguishes "this changed the page" from ordinary tool actions. */
+.traceRowPreview,
+.traceRowPreview .traceTool,
+.traceRowPreview .traceSummary {
+  color: #0f6cbd;
 }
 
 /* -- Interaction chrome --

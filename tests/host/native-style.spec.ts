@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 import type { BrowserViewEvent } from '../../src/core/protocol.ts'
+import { previewKey } from '../../src/core/protocol.ts'
 import { BrowserViewService, type BrowserViewSink } from '../../src/host/service.ts'
 
 /** One native operation the fake panel was asked to run. */
@@ -25,12 +26,15 @@ function stylePanel(): {
   sink: BrowserViewSink
   requests: NativeRequest[]
   styles: Record<string, string>
+  events: BrowserViewEvent[]
 } {
   const requests: NativeRequest[] = []
+  const events: BrowserViewEvent[] = []
   const styles: Record<string, string> = { 'border-radius': '9999px' }
   const service = new BrowserViewService()
   const sink: BrowserViewSink = {
     send(event: BrowserViewEvent) {
+      events.push(event)
       if (event.kind !== 'native-request') return
       requests.push({ op: event.op, args: event.args })
       let result: unknown
@@ -57,7 +61,7 @@ function stylePanel(): {
     },
     close() { /* nothing to release in the fake */ },
   }
-  return { service, sink, requests, styles }
+  return { service, sink, requests, styles, events }
 }
 
 describe('native style bridge', () => {
@@ -77,7 +81,11 @@ describe('native style bridge', () => {
     expect(before).toEqual({ 'border-radius': '9999px' })
     expect(requests.map(request => request.op)).toEqual(['style-get', 'style-set', 'style-reset'])
     expect(requests[1]?.args).toEqual({ selector: '#est_cn', property: 'border-radius', value: '0' })
-    expect(during).toEqual({ active: true, count: 1 })
+    expect(during).toEqual({
+      active: true,
+      count: 1,
+      elements: [{ selector: '#est_cn', relation: 'self' }],
+    })
     expect(service.state().preview).toBeUndefined()
     expect(styles['border-radius']).toBeUndefined()
     detach()
@@ -102,23 +110,63 @@ describe('native style bridge', () => {
     detach()
   })
 
-  it('operator reports panel style keys and the Preview state merges both writers', async () => {
+  it('operator reports panel style keys and the Preview state counts distinct elements', async () => {
     // Given an agent override already counted
     const { service, sink } = stylePanel()
     const detach = service.attach(sink)
     await service.handleCommand(sink, { v: 1, kind: 'native-attach', sessionId: 'session-a' })
     await service.nativeStyleSet('#est_cn', 'color', 'red')
-    expect(service.state().preview).toEqual({ active: true, count: 1 })
+    expect(service.state().preview).toEqual({
+      active: true,
+      count: 1,
+      elements: [{ selector: '#est_cn', relation: 'self' }],
+    })
 
-    // When the panel reports its own inspector key
-    await service.handleCommand(sink, { v: 1, kind: 'style-preview', keys: ['self|#est_cn||border-radius'] })
+    // When the panel reports one key on the same element and one on another
+    await service.handleCommand(sink, {
+      v: 1,
+      kind: 'style-preview',
+      keys: [
+        previewKey('self', '#est_cn', '', 'border-radius'),
+        previewKey('self', '#other', '', 'color'),
+      ],
+    })
 
-    // Then the union is what the chip and the route report
-    expect(service.state().preview).toEqual({ active: true, count: 2 })
+    // Then the count is elements, not properties, and the overlay list has both
+    expect(service.state().preview).toEqual({
+      active: true,
+      count: 2,
+      elements: [
+        { selector: '#est_cn', relation: 'self' },
+        { selector: '#other', relation: 'self' },
+      ],
+    })
 
     // And a page reload drops every key at once
     await service.handleCommand(sink, { v: 1, kind: 'preview-reset' })
     expect(service.state().preview).toBeUndefined()
+    detach()
+  })
+
+  it('operator targets a parent or a pseudo-element and the overlay keeps the element relation', async () => {
+    // Given a mounted panel
+    const { service, sink } = stylePanel()
+    const detach = service.attach(sink)
+    await service.handleCommand(sink, { v: 1, kind: 'native-attach', sessionId: 'session-a' })
+
+    // When two properties are set on different layers of one element
+    await service.nativeStyleSet('#est_cn', 'border-radius', '0', { pseudo: '::after' })
+    await service.nativeStyleSet('#est_cn', 'background-color', 'white', { relation: 'parent' })
+
+    // Then the element count stays one per target and pseudo does not split it
+    expect(service.state().preview).toEqual({
+      active: true,
+      count: 2,
+      elements: [
+        { selector: '#est_cn', relation: 'self' },
+        { selector: '#est_cn', relation: 'parent' },
+      ],
+    })
     detach()
   })
 
@@ -135,6 +183,23 @@ describe('native style bridge', () => {
 
     // Then the Preview chip cannot outlive the document it described
     expect(service.state().preview).toBeUndefined()
+    detach()
+  })
+
+  it('operator gets a preview-toned action line for a style adjustment', async () => {
+    // Given a mounted desktop panel
+    const { service, sink, events } = stylePanel()
+    const detach = service.attach(sink)
+    await service.handleCommand(sink, { v: 1, kind: 'native-attach', sessionId: 'session-a' })
+
+    // When a style adjustment is noted
+    service.noteStylePreview('#est_cn · border-radius: 24px → 0')
+
+    // Then the footer receives a normal action trace marked as a preview
+    expect(events.some(event => event.kind === 'action'
+      && event.trace.tool === 'style'
+      && event.trace.tone === 'preview'
+      && event.trace.summary.includes('border-radius'))).toBe(true)
     detach()
   })
 

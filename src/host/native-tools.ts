@@ -468,6 +468,7 @@ export function createDesktopTools(deps: DesktopToolDeps): ToolDefinition[] {
         if (args.value === undefined) throw new Error('webdev_desktop_style set needs a value')
         await service.nativeStyleSet(selector, property, args.value, options)
         const after = (await service.nativeStyle(selector, [property], options))[property] ?? ''
+        service.noteStylePreview(`${layer} · ${property}: ${before === '' ? '(none)' : before} → ${after === '' ? '(none)' : after}`)
         return {
           selector,
           action,
@@ -483,6 +484,7 @@ export function createDesktopTools(deps: DesktopToolDeps): ToolDefinition[] {
       }
       await service.nativeStyleReset(selector, property, options)
       const after = (await service.nativeStyle(selector, [property], options))[property] ?? ''
+      service.noteStylePreview(`${layer} · reset ${property}`)
       return {
         selector,
         action,

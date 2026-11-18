@@ -154,7 +154,59 @@ export interface BrowserPanelState {
    * document was changed in memory" fact. It clears on reload/navigation,
    * explicit reset, detach, or reconfigure.
    */
-  preview?: { active: boolean; count: number }
+  preview?: BrowserPreviewState
+}
+
+/** One element carrying at least one temporary style override. */
+export interface PreviewElement {
+  /** CSS selector of the picked element. */
+  selector: string
+  /** Whether the override targeted the element itself or its parent. */
+  relation: 'self' | 'parent'
+}
+
+/** Temporary-style state as the panel and the route report it. */
+export interface BrowserPreviewState {
+  /** Whether any override is still applied. */
+  active: boolean
+  /** Number of distinct elements carrying at least one override. */
+  count: number
+  /** Exactly those elements, for the hover highlight overlay. */
+  elements: PreviewElement[]
+}
+
+/** Separator for the opaque panel key, chosen because CSS selectors cannot contain it. */
+export const PREVIEW_KEY_SEPARATOR = '\u0000'
+
+/**
+ * Build one temporary-override key.
+ * @param relation - self or parent of the picked element.
+ * @param selector - CSS selector.
+ * @param pseudo - `::before`/`::after`, or empty for the element itself.
+ * @param property - CSS property.
+ * @returns the opaque key the panel and host share.
+ */
+export function previewKey(relation: 'self' | 'parent', selector: string, pseudo: string, property: string): string {
+  return [relation, selector, pseudo, property].join(PREVIEW_KEY_SEPARATOR)
+}
+
+/**
+ * Read one temporary-override key back.
+ * @param key - opaque key from the panel or the agent tool.
+ * @returns the fields, or undefined when the key is malformed.
+ */
+export function parsePreviewKey(key: string): {
+  relation: 'self' | 'parent'
+  selector: string
+  pseudo: string
+  property: string
+} | undefined {
+  const parts = key.split(PREVIEW_KEY_SEPARATOR)
+  if (parts.length !== 4) return undefined
+  const [relation, selector, pseudo, property] = parts as [string, string, string, string]
+  if (relation !== 'self' && relation !== 'parent') return undefined
+  if (selector === '' || property === '') return undefined
+  return { relation, selector, pseudo, property }
 }
 
 /** One line of the panel's "what is the agent doing" trace. */
@@ -165,6 +217,12 @@ export interface BrowserActionTrace {
   summary: string
   /** Millisecond timestamp of the action. */
   at: number
+  /**
+   * Optional presentation tone. `preview` marks a temporary style adjustment
+   * (agent tool or panel inspector) so the footer can draw it in the preview
+   * blue instead of the ordinary action color.
+   */
+  tone?: 'preview'
 }
 
 /** Host pushes one of these to every attached panel. */

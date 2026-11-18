@@ -24,9 +24,11 @@ import type {
   BrowserFailureReason,
   BrowserPanelState,
   BrowserPickedElement,
+  BrowserPreviewState,
   BrowserTabView,
   BrowserViewCommand,
   BrowserViewEvent,
+  PreviewElement,
 } from '../core/protocol.ts'
 
 /** Connection phase the panel renders in its status line. */
@@ -203,12 +205,22 @@ function readFailure(value: unknown): BrowserFailure | null {
 }
 
 /** Narrow the temporary-style state from the wire. */
-function readPreview(value: unknown): { active: boolean; count: number } | null {
+function readPreview(value: unknown): BrowserPreviewState | null {
   if (typeof value !== 'object' || value === null) return null
   const candidate = value as Record<string, unknown>
   if (typeof candidate.active !== 'boolean') return null
   if (typeof candidate.count !== 'number' || !Number.isFinite(candidate.count)) return null
-  return { active: candidate.active, count: candidate.count }
+  const elements: PreviewElement[] = []
+  if (Array.isArray(candidate.elements)) {
+    for (const entry of candidate.elements) {
+      if (typeof entry !== 'object' || entry === null) continue
+      const item = entry as Record<string, unknown>
+      if (typeof item.selector !== 'string' || item.selector === '') continue
+      if (item.relation !== 'self' && item.relation !== 'parent') continue
+      elements.push({ selector: item.selector, relation: item.relation })
+    }
+  }
+  return { active: candidate.active, count: candidate.count, elements }
 }
 
 /** Narrow the panel state from the wire. */
@@ -293,7 +305,12 @@ export function parseBrowserViewEvent(value: unknown): BrowserViewEvent | null {
       return {
         v: BROWSER_VIEW_API_VERSION,
         kind: 'action',
-        trace: { tool: row.tool, summary: row.summary, at: row.at },
+        trace: {
+          tool: row.tool,
+          summary: row.summary,
+          at: row.at,
+          ...(row.tone === 'preview' ? { tone: 'preview' as const } : {}),
+        },
       }
     }
     case 'pick-result': {

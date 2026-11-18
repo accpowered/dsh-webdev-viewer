@@ -2,9 +2,11 @@
 
 A DeepSeek Harness (DSH) plugin for building and verifying web and Electron UIs **inside the right sidebar**, together with an agent.
 
-> Status: **v0.1.1 preview**. A native Desktop side-panel browser with element picking, numbered markers,
+> Status: **v0.1.3 preview**. A native Desktop side-panel browser with element picking, numbered markers,
 > notes, a temporary style inspector, static preview with live reload, project runner, Electron/CDP attach,
-> and agent tools that drive the same guest. Repository: <https://github.com/accpowered/dsh-webdev-viewer>.
+> and agent tools that drive the same guest — including HiDPI CDP frames, an always-visible Original/Preview
+> document state, element-hover highlights, and blue style-adjustment traces. Repository:
+> <https://github.com/accpowered/dsh-webdev-viewer>.
 > The copied upstream client UI suites are excluded from the release gate; core/Host tests pass.
 
 ## What it does
@@ -13,7 +15,7 @@ A DeepSeek Harness (DSH) plugin for building and verifying web and Electron UIs 
 - Drive a real Chromium page from the tab: click, type, scroll, navigate, inspect.
 - Let the user and the agent drive the **same page** through the CDP tools when attached to the real browser; the native webview is the interactive Desktop surface.
 - Select elements with hover/active outlines and persistent numbered markers; add a note to the last pick and insert a structured quote into the DSH composer. The page-side picker works in the native Desktop guest and in the real browser window.
-- Tweak common visual properties (`color`, background, font size, padding, margin, radius) live on the native guest, reset them, and send the temporary change to the agent as a quote. The agent can do the same preview itself with `webdev_desktop_style` (`get`/`set`/`reset`/`inspect`, any CSS property, parent or `::before`/`::after` layers, before/after values) — runtime styles only, never a source write. While a preview is active the status row shows a blue **Preview** chip; reload discards it.
+- Tweak common visual properties (`color`, background, font size, padding, margin, radius) live on the native guest, reset them, and send the temporary change to the agent as a quote. The agent can do the same preview itself with `webdev_desktop_style` (`get`/`set`/`reset`/`inspect`, any CSS property, parent or `::before`/`::after` layers, before/after values) — runtime styles only, never a source write. The status row always shows which document state you are looking at: gray dot + **Original**, or blue dot + **Preview (n)** while overrides are active; hovering the marker highlights the touched elements like DevTools does.
 - Preview a workspace folder over a token-gated loopback server and reload it when files change.
 - Run a detected project dev server or an explicit command, stream logs, detect a localhost URL, and open it.
 - Attach to an Electron app's renderer over CDP with `webdev_electron_attach`; pair it with a `webdev_run` launch to capture main-process stdout/stderr via `webdev_logs`.
@@ -105,7 +107,7 @@ published at this time.
 - [x] Native Desktop webview + desktop agent tools
 - [x] Element markers, per-pick notes, compact style inspector
 - [x] Electron renderer attach + main-process log workflow
-- [x] GitHub publication and v0.1.1 release candidate
+- [x] GitHub publication and v0.1.3 release candidate
 - [ ] Full upstream client UI test harness and npm registry publication
 
 ## Development

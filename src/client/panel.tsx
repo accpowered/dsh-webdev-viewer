@@ -44,7 +44,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { BrowserActionTrace, BrowserFailureReason, BrowserInputEvent, BrowserPanelState, BrowserPickedElement } from '../core/protocol.ts'
-import { BROWSER_VIEW_API_VERSION } from '../core/protocol.ts'
+import { BROWSER_VIEW_API_VERSION, previewKey } from '../core/protocol.ts'
 import type { BrowserViewLiveTitleStore } from './live-title.ts'
 import { BROWSER_VIEW_PARTS, BROWSER_VIEW_PLUGIN } from './semantic.ts'
 import {
@@ -253,6 +253,8 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   const previewKeysRef = useRef<Set<string>>(new Set())
   /** The panel asks the host to clear stale preview keys once per mount. */
   const previewResetSentRef = useRef(false)
+  /** Debounce for style-adjustment traces; one keystroke is not one action. */
+  const styleTraceTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
 
   const factory = useMemo<BrowserViewSocketFactory>(
     () => socketFactory ?? ((handlers) => connectBrowserViewSocket(handlers, { location, sessionId })),
@@ -439,6 +441,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   // A source can only be offered when the host can really act on it.
   const canOpenIsolated = state.mode === 'cdp' && state.isolatedAvailable === true
   const canUseConfigured = state.mode === 'isolated' && state.realBrowserConfigured === true
+  const previewActive = state.preview?.active === true
   const shownEndpoint = state.cdpEndpoint ?? state.lastError?.endpoint
   const shownReason = state.lastError?.reason
   const failureTime = state.lastError?.at !== undefined
@@ -793,7 +796,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
 
   // One key per temporary override, in the same shape the host builds for the
   // agent tool, so the Preview count is a union rather than two writers.
-  const previewKeyOf = (selector: string, property: string): string => `self|${selector}||${property}`
+  const previewKeyOf = (selector: string, property: string): string => previewKey('self', selector, '', property)
 
   const reportPreview = (): void => {
     socketRef.current?.send({
@@ -803,35 +806,102 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     })
   }
 
+  /** Add one line to the footer trace, in the preview blue. */
+  const notePreviewTrace = (summary: string): void => {
+    const trace: BrowserActionTrace = { tool: 'style', summary, at: Date.now(), tone: 'preview' }
+    setTraces((current) => [trace, ...current].slice(0, TRACE_LIMIT))
+  }
+
+  const styleTraceKey = (selector: string, property: string): string => `${selector}\u0000${property}`
+
+  /**
+   * Note a live style edit after a short pause: the input fires per keystroke,
+   * and one adjustment is one line in the footer, not one line per character.
+   */
+  const noteStyleTraceSoon = (selector: string, property: string, summary: () => string): void => {
+    const key = styleTraceKey(selector, property)
+    const timers = styleTraceTimersRef.current
+    const existing = timers.get(key)
+    if (existing !== undefined) clearTimeout(existing)
+    timers.set(key, setTimeout(() => {
+      timers.delete(key)
+      notePreviewTrace(summary())
+    }, 350))
+  }
+
+  /** Drop a pending debounced style note; the caller writes its own line. */
+  const cancelStyleTrace = (selector: string, property: string): void => {
+    const key = styleTraceKey(selector, property)
+    const timers = styleTraceTimersRef.current
+    const existing = timers.get(key)
+    if (existing !== undefined) {
+      clearTimeout(existing)
+      timers.delete(key)
+    }
+  }
+
+  useEffect(() => () => {
+    for (const timer of styleTraceTimersRef.current.values()) clearTimeout(timer)
+    styleTraceTimersRef.current.clear()
+  }, [])
+
+  /**
+   * Draw (or clear) the DevTools-style translucent overlay around every element
+   * the current preview touched. Runs in the native guest; nothing is written
+   * to the page's own styles.
+   * @param active - whether the pointer is over the document-state marker.
+   */
+  const highlightPreview = (active: boolean): void => {
+    if (!nativeActive) return
+    const elements = active ? (state.preview?.elements ?? []) : []
+    void nativeRef.current?.request('style-highlight', { active, elements }).catch(() => undefined)
+  }
+
   const setStyle = (property: string, value: string): void => {
     if (!nativeActive || lastPick === undefined) return
+    const selector = lastPick.selector
+    const before = styleOriginal[property] ?? ''
     setStyleValues((current) => ({ ...current, [property]: value }))
     setStyleError(null)
     void nativeRef.current?.request('style-set', {
-      selector: lastPick.selector,
+      selector,
       property,
       value,
     }).then(() => {
-      previewKeysRef.current.add(previewKeyOf(lastPick.selector, property))
+      previewKeysRef.current.add(previewKeyOf(selector, property))
       reportPreview()
+      noteStyleTraceSoon(selector, property, () => {
+        return `${selector} · ${property}: ${before === '' ? '(none)' : before} → ${value === '' ? '(none)' : value}`
+      })
     }).catch((error: unknown) => {
       setStyleError(error instanceof Error ? error.message : String(error))
     })
   }
 
-  const resetStyle = (property: string): void => {
+  const resetStyle = (property: string, quiet = false): void => {
     if (!nativeActive || lastPick === undefined) return
+    const selector = lastPick.selector
     setStyleValues((current) => ({ ...current, [property]: styleOriginal[property] ?? '' }))
     setStyleError(null)
     void nativeRef.current?.request('style-reset', {
-      selector: lastPick.selector,
+      selector,
       property,
     }).then(() => {
-      previewKeysRef.current.delete(previewKeyOf(lastPick.selector, property))
+      previewKeysRef.current.delete(previewKeyOf(selector, property))
       reportPreview()
+      cancelStyleTrace(selector, property)
+      if (!quiet) notePreviewTrace(`${selector} · reset ${property}`)
     }).catch((error: unknown) => {
       setStyleError(error instanceof Error ? error.message : String(error))
     })
+  }
+
+  /** Reset the six common properties as one footer action. */
+  const resetAllStyles = (): void => {
+    if (!nativeActive || lastPick === undefined) return
+    const selector = lastPick.selector
+    for (const field of STYLE_FIELDS) resetStyle(field.key, true)
+    notePreviewTrace(`${selector} · reset all style previews`)
   }
 
   const sendStyle = (): void => {
@@ -1063,6 +1133,26 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
         >
           <StateDot state={dotState} size={10} />
           <span className={css.statusText}>{statusLabel}</span>
+          {/* A permanent document-state marker, styled like the connection dot:
+              gray Original (as authored) or blue Preview (temporary overrides).
+              It is a separate axis from Live, so it never replaces it. */}
+          <span
+            className={css.documentState}
+            title={previewActive ? t('panel.preview.hint') : t('panel.original.hint')}
+            data-dsh-part={BROWSER_VIEW_PARTS.preview}
+            onMouseEnter={() => { highlightPreview(true) }}
+            onMouseLeave={() => { highlightPreview(false) }}
+          >
+            <span
+              className={cx(css.stateDot, previewActive ? css.stateDotPreview : css.stateDotMuted)}
+              aria-hidden="true"
+            />
+            <span>
+              {previewActive
+                ? `${t('panel.preview')} (${state.preview?.count ?? 0})`
+                : t('panel.original')}
+            </span>
+          </span>
           {modeLabel.length > 0 && (canUseConfigured ? (
             // The explicit isolated choice is visible here and undoable here:
             // one click returns to the configured real browser.
@@ -1077,16 +1167,6 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           ) : (
             <span className={css.mode}>{modeLabel}</span>
           ))}
-          {state.preview?.active === true && (
-            <span
-              className={css.previewChip}
-              title={t('panel.preview.hint')}
-              data-dsh-part={BROWSER_VIEW_PARTS.preview}
-            >
-              <span className={css.previewDot} aria-hidden="true" />
-              <span>{t('panel.preview')}</span>
-            </span>
-          )}
           {!nativeActive && visibleFrame !== null && (
             <span className={css.frameSize} title={t('panel.toolbar.frameHint')}>
               {visibleFrame.width}×{visibleFrame.height} · PNG
@@ -1180,7 +1260,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
             <button type="button" className={css.pickButton} onClick={sendStyle}>
               {t('panel.style.send')}
             </button>
-            <button type="button" className={css.pickButton} onClick={() => { for (const field of STYLE_FIELDS) resetStyle(field.key) }}>
+            <button type="button" className={css.pickButton} onClick={resetAllStyles}>
               {t('panel.style.reset')}
             </button>
             <span className={css.styleNote}>{t('panel.style.note')}</span>
@@ -1392,7 +1472,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           {traces.length === 0
             ? <span className={css.traceIdle}>{t('panel.trace.idle')}</span>
             : traces.map((trace, index) => (
-              <div key={`${trace.at}-${index}`} className={css.traceRow}>
+              <div key={`${trace.at}-${index}`} className={cx(css.traceRow, trace.tone === 'preview' && css.traceRowPreview)}>
                 <span className={css.traceTool}>{trace.tool}</span>
                 <span className={css.traceSummary}>{trace.summary}</span>
               </div>

@@ -407,6 +407,60 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
         })()`)
         return { ok: true }
       }
+      case 'style-highlight': {
+        const active = input.active === true
+        const elements = Array.isArray(input.elements)
+          ? input.elements
+            .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+            .map(item => ({
+              selector: typeof item.selector === 'string' ? item.selector : '',
+              relation: item.relation === 'parent' ? 'parent' : 'self',
+            }))
+            .filter(item => item.selector !== '')
+          : []
+        await element.executeJavaScript(`(() => {
+          // A DevTools-style overlay: translucent boxes in a closed shadow root,
+          // so page scripts, the picker markers and the DOM snapshot never see
+          // them as content. Cleared completely when the pointer leaves.
+          const KEY = '__dshWebdevHighlight';
+          const existing = window[KEY];
+          if (existing !== undefined) {
+            for (const box of existing.boxes) box.remove();
+            existing.host.remove();
+            delete window[KEY];
+          }
+          if (!${JSON.stringify(active)}) return true;
+          const elements = ${JSON.stringify(elements)};
+          if (elements.length === 0) return true;
+          const host = document.createElement('div');
+          host.setAttribute('data-dsh-webdev-highlight', '');
+          host.style.cssText = 'position:absolute;top:0;left:0;width:0;height:0;overflow:visible;pointer-events:none;z-index:2147483647';
+          const shadow = host.attachShadow({ mode: 'closed' });
+          document.documentElement.appendChild(host);
+          const boxes = [];
+          const scrollX = window.scrollX || document.documentElement.scrollLeft || 0;
+          const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
+          for (const item of elements) {
+            const el = document.querySelector(item.selector);
+            if (el === null) continue;
+            const target = item.relation === 'parent' ? el.parentElement : el;
+            if (target === null) continue;
+            const rect = target.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) continue;
+            const box = document.createElement('div');
+            box.style.cssText = 'position:absolute;box-sizing:border-box;pointer-events:none;background:rgba(15,108,189,0.22);border:1px solid rgba(15,108,189,0.85);border-radius:2px;';
+            box.style.left = (rect.left + scrollX) + 'px';
+            box.style.top = (rect.top + scrollY) + 'px';
+            box.style.width = rect.width + 'px';
+            box.style.height = rect.height + 'px';
+            shadow.appendChild(box);
+            boxes.push(box);
+          }
+          window[KEY] = { host, boxes };
+          return true;
+        })()`)
+        return { ok: true }
+      }
       default:
         throw new Error(`unknown operation: ${op}`)
     }

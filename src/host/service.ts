@@ -55,6 +55,8 @@ import {
   PANEL_NOT_MOUNTED_CODE,
   REAL_BROWSER_DISCONNECTED_CODE,
   SNAPSHOT_NODE_LIMIT,
+  parsePreviewKey,
+  previewKey,
   type BrowserActionTrace,
   type BrowserConsoleEntry,
   type BrowserFailure,
@@ -62,10 +64,12 @@ import {
   type BrowserNetworkEntry,
   type BrowserPanelState,
   type BrowserPickedElement,
+  type BrowserPreviewState,
   type BrowserSnapshot,
   type BrowserTabView,
   type BrowserViewCommand,
   type BrowserViewEvent,
+  type PreviewElement,
 } from '../core/protocol.ts'
 
 /** Stable short fingerprint for a page-side pick. */
@@ -557,18 +561,28 @@ export class BrowserViewService implements BrowserViewBackend {
       state.message = this.lastFailure.message
     }
     if (this.failedAttempts > 0) state.attempts = this.failedAttempts
-    const previewCount = this.previewKeyCount()
-    if (previewCount > 0) state.preview = { active: true, count: previewCount }
+    const preview = this.previewState()
+    if (preview !== undefined) state.preview = preview
     return state
   }
 
   /**
-   * Number of temporary style overrides currently applied to the native page.
-   * @returns the merged agent + panel key count.
+   * Aggregate the temporary-override keys into the element list the panel
+   * shows and highlights.
+   * @returns the preview state, or undefined when no override is active.
    */
-  private previewKeyCount(): number {
+  private previewState(): BrowserPreviewState | undefined {
     const merged = new Set<string>([...this.agentPreviewKeys, ...this.panelPreviewKeys])
-    return merged.size
+    if (merged.size === 0) return undefined
+    const elements = new Map<string, PreviewElement>()
+    for (const key of merged) {
+      const parsed = parsePreviewKey(key)
+      if (parsed === undefined) continue
+      const id = `${parsed.relation}\u0000${parsed.selector}`
+      if (!elements.has(id)) elements.set(id, { selector: parsed.selector, relation: parsed.relation })
+    }
+    if (elements.size === 0) return undefined
+    return { active: true, count: elements.size, elements: [...elements.values()] }
   }
 
   /** Drop every temporary-style key and tell the panels the document is clean. */
@@ -1063,7 +1077,7 @@ export class BrowserViewService implements BrowserViewBackend {
     options: NativeStyleTargetOptions = {},
   ): Promise<void> {
     await this.nativeRequest('style-set', { selector, property, value, ...options })
-    this.agentPreviewKeys.add(this.previewKeyOf(selector, property, options))
+    this.agentPreviewKeys.add(previewKey(options.relation ?? 'self', selector, options.pseudo ?? '', property))
     this.broadcast({ v: 1, kind: 'state', state: this.state() })
   }
 
@@ -1083,19 +1097,21 @@ export class BrowserViewService implements BrowserViewBackend {
     options: NativeStyleTargetOptions = {},
   ): Promise<void> {
     await this.nativeRequest('style-reset', { selector, property, ...options })
-    this.agentPreviewKeys.delete(this.previewKeyOf(selector, property, options))
+    this.agentPreviewKeys.delete(previewKey(options.relation ?? 'self', selector, options.pseudo ?? '', property))
     this.broadcast({ v: 1, kind: 'state', state: this.state() })
   }
 
   /**
-   * Stable key for one temporary override, shared with the panel's own keys.
-   * @param selector - CSS selector.
-   * @param property - CSS property.
-   * @param options - target layer.
-   * @returns the key the Preview state counts.
+   * Add one temporary-style line to every panel's action trace.
+   *
+   * The footer is where a person reads what just happened; a style preview is
+   * an action even though it is not a tool call on a tab. The `preview` tone is
+   * what makes the row render in the same blue as the document-state dot.
+   * @param summary - one line, e.g. `#est_cn::after · border-radius: 24px → 0`.
    */
-  private previewKeyOf(selector: string, property: string, options: NativeStyleTargetOptions): string {
-    return `${options.relation ?? 'self'}|${selector}|${options.pseudo ?? ''}|${property}`
+  noteStylePreview(summary: string): void {
+    const trace: BrowserActionTrace = { tool: 'style', summary, at: this.now(), tone: 'preview' }
+    this.broadcast({ v: 1, kind: 'action', trace })
   }
 
   /**

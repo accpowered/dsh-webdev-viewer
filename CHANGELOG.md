@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.1.3 (2026-11-19)
 
-- The panel shows a blue **Preview** chip in the status row whenever temporary style overrides are applied to the visible page (agent `webdev_desktop_style` or the panel's own style inspector). The host state carries `preview { active, count }`, the connection state stays `Live`, and a reload/navigation/reset/detach clears it; the wire gains `style-preview` and `preview-reset` commands.
+- The status row gains a permanent document-state marker beside Live, styled like the connection dot (no border, muted text, 10px slot / 6px core): a gray dot + **Original** when the page is as authored, and a blue dot + **Preview (n)** while temporary style overrides are active — `n` is the number of distinct elements touched, and hovering the marker draws a DevTools-style translucent overlay around each of them. The host state carries `preview { active, count, elements }`, and a reload/navigation/reset/detach clears it; the wire gains `style-preview` and `preview-reset` commands.
 - `webdev_desktop_style` gains `relation: "self" | "parent"`, `pseudo: "::before" | "::after"`, and `action: "inspect"`, which probes the element, its parent and both pseudo-elements so a composite widget can be diagnosed and changed on the layer that really draws it. Pseudo overrides use one marked stylesheet rule (removed on reset/reload); inline overrides stay inline.
-- Tests: 239 Host/core tests pass; `pnpm typecheck`, `build` and `pack` pass.
+- Style adjustments also land in the footer action trace as `style` lines in the same blue as the Preview dot (`BrowserActionTrace.tone: "preview"`): the agent tool reports each set/reset with a before→after summary, and the panel's own inspector reports a debounced line per adjustment (Reset all is one line).
+- Tests: 242 Host/core tests pass; `pnpm typecheck`, `build` and `pack` pass.
 
 ## v0.1.2 (2026-11-18)
 

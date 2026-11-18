@@ -1,9 +1,30 @@
 // New test for dsh-webdev-viewer (Apache-2.0). See NOTICE.
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { BROWSER_VIEW_API_VERSION, isBrowserInputEvent, isBrowserViewCommand } from '../../src/core/protocol.ts'
+import {
+  BROWSER_VIEW_API_VERSION,
+  isBrowserInputEvent,
+  isBrowserViewCommand,
+  parsePreviewKey,
+  previewKey,
+} from '../../src/core/protocol.ts'
 
 describe('panel protocol additions', () => {
+  it('round-trips one opaque preview key and rejects a malformed one', () => {
+    // Given a selector that contains the old pipe separator
+    // When its key is built and parsed
+    // Then the fields survive exactly and a bad key is refused instead of guessed
+    const key = previewKey('parent', '#a|b', '::before', 'border-radius')
+    expect(parsePreviewKey(key)).toEqual({
+      relation: 'parent',
+      selector: '#a|b',
+      pseudo: '::before',
+      property: 'border-radius',
+    })
+    expect(parsePreviewKey('self|#a||color')).toBeUndefined()
+    expect(parsePreviewKey(previewKey('self', '#a', '', ''))).toBeUndefined()
+  })
+
   it('accepts input and pick commands on the current version', () => {
     expect(isBrowserViewCommand({
       v: BROWSER_VIEW_API_VERSION,
@@ -43,7 +64,7 @@ describe('panel protocol additions', () => {
     expect(isBrowserViewCommand({
       v: BROWSER_VIEW_API_VERSION,
       kind: 'style-preview',
-      keys: ['self|#est_cn||border-radius'],
+      keys: [previewKey('self', '#est_cn', '', 'border-radius')],
     })).toBe(true)
     expect(isBrowserViewCommand({ v: BROWSER_VIEW_API_VERSION, kind: 'preview-reset' })).toBe(true)
     expect(isBrowserViewCommand({
