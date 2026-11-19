@@ -30,7 +30,7 @@ Do **not** use the shipped `browser` kind, and do not register `rightbar` / `rig
 ## Security
 
 - Panel and state routes are loopback-only; authenticate them with `ctx.connection.requestRejection` (the web server does not authenticate).
-- Isolated mode launches a throwaway Chromium profile. `realBrowserEnabled` is an explicit opt-in; never silently fall back between modes.
+- Isolated mode launches a throwaway Chromium profile. `realBrowserEnabled` is an explicit opt-in; never silently fall back between modes. A downgrade is only ever the caller's explicit request — the panel's `open-isolated` command or the `webdev_open_isolated` tool — never something another tool does on its own, and asking for the carrier already selected must not relaunch it.
 - The Electron debug port is unauthenticated local code execution; own the launch and keep it loopback.
 - Screenshots are committed only through `ctx.attachments.saveImage`.
 - Preview servers bind `127.0.0.1` with a random port and a one-time token; path containment is mandatory.

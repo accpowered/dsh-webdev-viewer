@@ -13,6 +13,7 @@ DeepSeek Harness（DSH）插件：在**右侧栏**里与 agent 一起开发和�
 - 把工作区目录作为静态站点预览，文件变化后自动刷新。
 - 运行项目 dev server（Vite、Next 等），或通过 CDP attach Electron renderer。
 - 给 agent 完整页面信息：带 ref 的 DOM/ARIA snapshot、console、network、截图。
+- 真实浏览器不可达时可恢复：面板显示模式、CDP 地址、分类原因与 **重试** /「在隔离浏览器中打开」；agent 侧有同名能力的 `webdev_open_isolated`（失败错误的 JSON 带 `nextStep`），无人值守的会话也能在同一回合内自愈；已经是隔离浏览器时再调用只会复用现有页面，不会重启浏览器。
 - 打开任意 HTTP(S) 网站，包括 loopback 服务。
 - tab 可 floating/fullscreen，也可在 headed Chrome/Electron 窗口中镜像同一页面。
 

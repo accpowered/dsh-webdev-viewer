@@ -1,6 +1,6 @@
 // Modified for dsh-webdev-viewer from @linxin666/dsh-client-ui-browser-view 0.4.19 (Apache-2.0). See NOTICE.
 /**
- * The eleven agent tools over the browser service.
+ * The agent tools over the browser service.
  *
  * Shape of a result. Every tool but `webdev_screenshot` returns structured
  * JSON, rendered as one pretty-printed text block: the model reads fields, not
@@ -25,7 +25,10 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { BrowserPanelState } from '../core/protocol.ts'
+import { ISOLATED_BROWSER_UNAVAILABLE_CODE } from '../core/protocol.ts'
 import type { ScreenshotRequest } from '../core/screenshot.ts'
+import { remediationFor } from './cdp-endpoint.ts'
 import type { BrowserViewService } from './service.ts'
 
 /** A durable image reference as the attachment service returns it. */
@@ -85,6 +88,29 @@ const TAB_ID_PARAM = {
   type: 'string',
   description: 'Tab id from webdev_tabs or a previous result. Omit to use the tab this session already uses.',
 } as const
+
+/**
+ * Turn the launch failure a failed isolated switch recorded into a tool error.
+ *
+ * `openIsolated` reports a launch failure through the panel state instead of
+ * throwing, because the panel command that shares that path has no error
+ * channel. A tool call has one, and a call that silently returned
+ * `mode: "isolated"` for a browser that never started would hide the failure it
+ * was asked to fix — so the recorded failure is read back and thrown with the
+ * same machine-readable JSON the real-browser failures carry.
+ * @param state - state returned by `openIsolated`, with `running` false.
+ * @returns the error to throw.
+ */
+function isolatedUnavailable(state: BrowserPanelState): Error {
+  const failure = state.lastError
+  const code = failure?.code ?? ISOLATED_BROWSER_UNAVAILABLE_CODE
+  const reason = failure?.reason ?? 'unknown'
+  const remediation = failure?.remediation ?? remediationFor(reason)
+  return new Error(
+    `${code}: could not switch to the isolated browser (${reason}). ${remediation} `
+      + JSON.stringify({ code, reason, remediation, nextStep: 'webdev_open_isolated' }),
+  )
+}
 
 /** Shared element-target parameters. */
 const TARGET_PARAMS = {
@@ -548,7 +574,8 @@ title: ${value.title}
       + 'In isolated mode it never starts a browser; in real-browser mode it connects to the configured CDP endpoint and discovers existing page tabs. '
       + 'When that endpoint is unreachable the failure carries a stable code (webdev.real_browser_unavailable), an endpoint, a reason '
       + '(econnrefused, not_cdp, spawn_denied, not_installed, timeout, unknown) and a remediation as JSON, so branch on fields instead of prose. '
-      + 'The user can unblock the panel without a new browser window by clicking "Open in isolated Chromium"; do not start Chrome yourself to work around it. '
+      + 'You can then switch explicitly with webdev_open_isolated (a person can also click "Open in isolated Chromium" in the panel); '
+      + 'do not start a browser process yourself to work around it. '
       + '中文触发词：有多少标签页、当前浏览器状态、打开着哪些页面。',
     parameters: {},
     output: {
@@ -569,6 +596,63 @@ title: ${value.title}
     execute: async () => {
       const result = await service.listTabs()
       return { tabs: result.tabs, activeTabId: result.activeTabId }
+    },
+  })
+
+  const openIsolatedTool = defineTool({
+    name: 'webdev_open_isolated',
+    description: 'Switch the viewer to the isolated Chromium it launches itself, and return the new state (mode, activeTabId, tabs). '
+      + 'This is the explicit, user-visible recovery from webdev.real_browser_unavailable: the panel status row shows the changed carrier '
+      + 'and offers a one-click return to the configured browser, so the person can see what happened. '
+      + 'Call it only after a webdev_* tool failed with reason econnrefused, not_cdp, timeout, spawn_denied or not_installed; do not loop on it, '
+      + 'and do not start a browser process yourself, because a browser the host did not launch is one the viewer cannot reconnect to. '
+      + 'When the isolated Chromium is already the current source the call keeps its open tabs instead of relaunching, so it is safe to repeat with the URL you were opening. '
+      + 'A launch failure is reported as webdev.isolated_browser_unavailable with the classified reason in the error text. '
+      + '中文触发词：切换隔离浏览器、降级到隔离浏览器、换个浏览器试试、打开隔离浏览器。',
+    parameters: {
+      url: {
+        type: 'string',
+        description: 'Page to open in the new browser, normally the URL you just tried. Omit to keep the current page.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          mode: { type: 'string', required: true, description: 'Browser source now selected; "isolated" after a successful call.' },
+          switched: {
+            type: 'boolean',
+            required: true,
+            description: 'Whether this call changed the source, as opposed to the isolated Chromium already being selected.',
+          },
+          url: { type: 'string', description: 'Page this call opened, when one was asked for.' },
+          tabs: { type: 'array', required: true, items: TAB_VIEW_SCHEMA },
+          activeTabId: {
+            required: true,
+            oneOf: [{ type: 'string' }, { type: 'null' }],
+            description: 'Tab the panel is watching, or null when no tab is open.',
+          },
+          summary: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => renderJson(value),
+    },
+    execute: async (args) => {
+      const switched = service.state().mode !== 'isolated'
+      const state = await service.openIsolated(args.url)
+      if (state.running !== true) throw isolatedUnavailable(state)
+      const pages = `${state.tabs.length} page${state.tabs.length === 1 ? '' : 's'} open`
+      return {
+        mode: state.mode ?? 'isolated',
+        switched,
+        ...args.url === undefined || args.url === '' ? {} : { url: args.url },
+        tabs: state.tabs,
+        activeTabId: state.activeTabId,
+        summary: switched
+          ? `Switched the viewer to the isolated Chromium; ${pages}`
+          : `The isolated Chromium was already the current source; kept ${pages}`,
+      }
     },
   })
 
@@ -685,7 +769,7 @@ title: ${value.title}
     },
   })
 
-  return [navigate, click, type, press, scroll, snapshot, screenshot, consoleTool, networkTool, tabs, attachEndpoint, detachEndpoint, close]
+  return [navigate, click, type, press, scroll, snapshot, screenshot, consoleTool, networkTool, tabs, openIsolatedTool, attachEndpoint, detachEndpoint, close]
 }
 
 /** Names of every tool this plugin registers, in registration order. */
@@ -700,6 +784,7 @@ export const BROWSER_TOOL_NAMES = [
   'webdev_console',
   'webdev_network',
   'webdev_tabs',
+  'webdev_open_isolated',
   'webdev_electron_attach',
   'webdev_electron_detach',
   'webdev_close',

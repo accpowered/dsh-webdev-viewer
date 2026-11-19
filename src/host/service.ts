@@ -1723,19 +1723,28 @@ export class BrowserViewService implements BrowserViewBackend {
    * Switch to the isolated Chromium the viewer launches itself.
    *
    * This is the one sanctioned way around "the real browser must be started by
-   * hand": a person clicked it, the mode change is pushed to every panel, and
-   * the status row names the carrier. It is never chosen automatically. When
-   * the panel sends the page it was showing, that page is opened in the new
-   * browser, so recovery restores the view instead of handing back an empty
-   * panel.
+   * hand", and both callers use it: a person clicking "Open in isolated
+   * Chromium" in the panel and the agent's `webdev_open_isolated` tool. The
+   * switch is explicit in both cases — the mode change is pushed to every
+   * panel, and the status row names the carrier — so it is never chosen
+   * automatically. When the panel or the tool sends the page it was showing,
+   * that page is opened in the new browser, so recovery restores the view
+   * instead of handing back an empty panel.
+   *
+   * Asking for the carrier that is already selected is a request to *use* it,
+   * not to replace it: relaunching would close a live browser and every tab it
+   * holds for a no-op. That is why the reconfigure is conditional — the agent
+   * tool calls this on each recovery attempt, so the idempotent path is the
+   * common one.
    * @param url - page to open once the isolated browser is up.
    * @returns the state after the attempt, including a classified launch failure.
    */
   async openIsolated(url?: string): Promise<BrowserPanelState> {
     if (this.disposed) return this.state()
+    const switching = this.resolveConfig().mode !== 'isolated'
     this.manualMode = 'isolated'
     this.manualEndpoint = undefined
-    await this.reconfigure()
+    if (switching) await this.reconfigure()
     try {
       await this.requireSession()
       await this.startStreaming().catch(() => undefined)
@@ -1743,10 +1752,12 @@ export class BrowserViewService implements BrowserViewBackend {
       // startSession recorded the classified launch failure and broadcast it.
     }
     if (url !== undefined && url !== '' && this.session !== undefined) {
-      // An unbound tab: the person asked for this page, not for an agent's tab.
+      // An unbound tab: the caller asked for this page, not for an agent's tab.
       await this.navigate(undefined, url)
     }
-    this.broadcast({ v: 1, kind: 'state', state: this.state() })
+    // A source change needs its own push so every panel repaints the carrier;
+    // an unchanged one already broadcast whatever startSession had to say.
+    if (switching) this.broadcast({ v: 1, kind: 'state', state: this.state() })
     return this.state()
   }
 

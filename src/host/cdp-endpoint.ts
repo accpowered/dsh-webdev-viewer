@@ -186,7 +186,8 @@ export function classifyBrowserFailure(error: unknown): BrowserFailureReason {
  * Every line names the action the person can take in the panel first, because
  * that is where the failure is shown; the manual browser launch is the second
  * option, not the requirement. "No silent fallback" still holds: the isolated
- * browser only opens when the person clicks it.
+ * browser only opens when the person clicks it or the agent explicitly calls
+ * `webdev_open_isolated`. An ordinary tool call never switches the source.
  * @param reason - classified failure.
  * @returns one sentence, no trailing period required by callers.
  */
@@ -228,13 +229,22 @@ export class RealBrowserUnavailableError extends Error {
    */
   constructor(endpoint: string, reason: BrowserFailureReason, remediation: string, options?: ErrorOptions) {
     // The JSON line is deliberate. A tool failure reaches the model as text, so
-    // the fields ride the text: `code`, `endpoint`, `reason` and `remediation`
-    // stay machine-readable without the model parsing prose. No silent fallback
-    // is attempted, and the sentence says so.
+    // the fields ride the text: `code`, `endpoint`, `reason`, `remediation` and
+    // the `nextStep` tool name stay machine-readable without the model parsing
+    // prose. No silent fallback is attempted; the sentence says so, and it names
+    // the explicit call that does switch the source.
     super(
       `${REAL_BROWSER_UNAVAILABLE_CODE}: could not reach the real browser at ${endpoint} (${reason}). `
         + `${remediation} No isolated-browser fallback was attempted. `
-        + JSON.stringify({ code: REAL_BROWSER_UNAVAILABLE_CODE, endpoint, reason, remediation }),
+        + 'To switch explicitly, call webdev_open_isolated with the URL you were opening; '
+        + 'the panel status row will show the changed carrier. '
+        + JSON.stringify({
+          code: REAL_BROWSER_UNAVAILABLE_CODE,
+          endpoint,
+          reason,
+          remediation,
+          nextStep: 'webdev_open_isolated',
+        }),
       options,
     )
     this.name = 'RealBrowserUnavailableError'

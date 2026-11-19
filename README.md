@@ -22,7 +22,7 @@ A DeepSeek Harness (DSH) plugin for building and verifying web and Electron UIs 
 - Give the agent full page detail: DOM/ARIA snapshot with refs, console, network, screenshots (PNG or JPEG).
 - Open any HTTP(S), `data:`, or `about:` URL, including loopback services.
 - Mirror the page in a headed Chrome/Edge window over CDP.
-- Recover without opening a second browser window: when the configured real browser is unreachable, the tab shows the mode, the exact CDP target, the classified reason and time, plus **Retry** and an explicit **Open in isolated Chromium** action that renders the page in the panel. A browser closed mid-session becomes a visible disconnect within about a second and re-attaches by itself when the endpoint answers again.
+- Recover without opening a second browser window: when the configured real browser is unreachable, the tab shows the mode, the exact CDP target, the classified reason and time, plus **Retry** and an explicit **Open in isolated Chromium** action that renders the page in the panel. The same switch is available to the agent as `webdev_open_isolated` — the failed tool error names it as JSON `nextStep` — so an unattended session recovers in the same turn instead of waiting for a human click; calling it while the isolated browser is already the carrier keeps its open tabs instead of relaunching. A browser closed mid-session becomes a visible disconnect within about a second and re-attaches by itself when the endpoint answers again.
 
 ## Architecture truth
 

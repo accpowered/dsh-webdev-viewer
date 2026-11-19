@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `webdev_open_isolated { url? }` gives the agent the switch the panel's **Open in isolated Chromium** button already had. After a `webdev.real_browser_unavailable` failure one explicit call moves the viewer to the isolated Chromium it launches itself, and the next tool call drives that browser — an unattended session now recovers inside the same turn instead of waiting for a human click. The result is `{ mode, switched, url?, tabs, activeTabId, summary }`; a launch failure is reported as `webdev.isolated_browser_unavailable` with its classified `reason` instead of a silent success. Calling it while the isolated Chromium is already the carrier keeps the live browser and every open tab (no relaunch, no redundant state push).
+- The classified real-browser failure now ends with an actionable next step: the message names `webdev_open_isolated` and its JSON line carries `nextStep: "webdev_open_isolated"`, so a tool call that did not read any docs can still recover. The `webdev_tabs` description points at the tool instead of only at the panel button. Nothing falls back on its own: the switch remains the caller's explicit request.
+- Tests: 6 new Host cases for the tool (248 Host/core tests in total); `pnpm typecheck`, `build` and `pack` pass. The three `removeTempProfile` cases need write access outside the workspace, which the agent file sandbox denies.
+
 ## v0.1.3 (2026-11-19)
 
 - The status row gains a permanent document-state marker beside Live, styled like the connection dot (no border, muted text, 10px slot / 6px core): a gray dot + **Original** when the page is as authored, and a blue dot + **Preview (n)** while temporary style overrides are active — `n` is the number of distinct elements touched, and hovering the marker draws a DevTools-style translucent overlay around each of them. The host state carries `preview { active, count, elements }`, and a reload/navigation/reset/detach clears it; the wire gains `style-preview` and `preview-reset` commands.

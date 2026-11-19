@@ -89,8 +89,8 @@ describe('loopback CDP endpoints', () => {
   it('operator gets a classified, machine-readable failure instead of a raw fetch error', () => {
     // Given a failed external-browser connection whose cause is a refused port
     // When its operator-facing error is constructed
-    // Then it names the stable code, the endpoint, the reason and the remediation,
-    // and the same fields ride the message as JSON for the agent
+    // Then it names the stable code, the endpoint, the reason, the remediation and
+    // the explicit next step, and the same fields ride the message as JSON for the agent
     const endpoint = parseCdpEndpoint('http://127.0.0.1:9222')
     const refused = Object.assign(new TypeError('fetch failed'), {
       cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:9222'), { code: 'ECONNREFUSED' }),
@@ -103,12 +103,14 @@ describe('loopback CDP endpoints', () => {
       reason: 'econnrefused',
     })
     expect(failure.message).toContain('No isolated-browser fallback was attempted')
+    expect(failure.message).toContain('webdev_open_isolated')
     const payload = JSON.parse(failure.message.slice(failure.message.lastIndexOf('{'))) as Record<string, unknown>
     expect(payload).toEqual({
       code: 'webdev.real_browser_unavailable',
       endpoint: 'http://127.0.0.1:9222',
       reason: 'econnrefused',
       remediation: failure.remediation,
+      nextStep: 'webdev_open_isolated',
     })
     expect(failure.remediation).toMatch(/Open in isolated Chromium/)
   })

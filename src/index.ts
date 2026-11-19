@@ -5,7 +5,7 @@
  * Mounts three surfaces and nothing else:
  *
  * - the status route and the panel WebSocket under /api/dsh-webdev-viewer,
- * - the twenty-four `webdev_*` agent tools,
+ * - the twenty-eight `webdev_*` agent tools,
  * - one lazily started Chromium that both share (src/host/service.ts).
  *
  * No system-prompt announcement: the repository requires an `announceToAgent`

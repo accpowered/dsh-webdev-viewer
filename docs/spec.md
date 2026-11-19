@@ -71,7 +71,7 @@ The current wire version stays **v1**. The input and pick commands are additive 
 - `pick-mode { enabled }` — install/toggle the page-side picker in the displayed tab. The page editor then picks clicks made in the real browser window as well as through the panel.
 - `viewport { width, height, deviceScaleFactor? }` — render the page at the panel's content size so the frame is 1:1 instead of scaled. `deviceScaleFactor` is the panel's `window.devicePixelRatio` (1–3): the CSS viewport stays the panel size while captures render at that density. The frame's `width/height` stay CSS pixels; the encoded image may be larger, and a page that stops changing is upgraded to a device-scale still after `CRISP_FRAME_SETTLE_MS`.
 - `reconnect` — retry the configured source once. The user's Retry; never switches the source.
-- `open-isolated { url? }` — the user clicked "Open in isolated Chromium": switch the source to the browser the host launches itself and render the page here instead of asking for a manually started window. The new `mode` is pushed to every panel.
+- `open-isolated { url? }` — the user clicked "Open in isolated Chromium": switch the source to the browser the host launches itself and render the page here instead of asking for a manually started window. The new `mode` is pushed to every panel. The agent tool `webdev_open_isolated` calls the same Host method, so both callers switch identically; asking for the carrier that is already selected keeps the live browser and its tabs instead of relaunching them.
 - `use-configured` — forget an explicit isolated/attached source and return to the profile's configured browser.
 - `style-preview { keys }` — replace the panel's share of the temporary-style key set (`self|selector||property` strings). The host merges it with the agent tool's keys for the Preview state.
 - `preview-reset` — drop every temporary-style key: the page was reloaded or navigated.
@@ -110,12 +110,21 @@ panel and the agent read the same fields:
 | `unknown` | Anything the Host cannot classify honestly. |
 
 - A failed attach raises `RealBrowserUnavailableError`; its message ends with
-  `{ code, endpoint, reason, remediation }` as one JSON object, so a tool call is
-  branchable without parsing prose. A failed isolated launch raises the same
-  shape with `webdev.isolated_browser_unavailable`.
+  `{ code, endpoint, reason, remediation, nextStep }` as one JSON object, so a
+  tool call is branchable without parsing prose and knows the action to take.
+  `nextStep` names the explicit `webdev_open_isolated` tool. A failed isolated
+  launch raises the same shape with `webdev.isolated_browser_unavailable`.
 - `realBrowserEnabled` still never falls back on its own. The isolated browser is
-  only selected by the explicit `open-isolated` command, and the resulting
-  `mode` is visible in the status row.
+  only selected by the explicit `open-isolated` command or the explicit
+  `webdev_open_isolated` tool, and the resulting `mode` is visible in the status
+  row (with `use-configured` as the way back). No ordinary tool turns a browser
+  failure into a source switch on its own.
+- `webdev_open_isolated { url? }` is that tool: it switches the source, returns
+  `{ mode, switched, url?, tabs, activeTabId, summary }`, and opens `url` in the
+  new browser when given. `switched` separates "the carrier changed" from "the
+  isolated browser was already the carrier" (which keeps the live tabs). A host
+  with no browser binary fails with `webdev.isolated_browser_unavailable` /
+  `reason: "not_installed"` instead of succeeding silently or hanging.
 - While a panel is open on a real browser, the Host probes the endpoint every
   `LIVENESS_INTERVAL_MS` (1 s, one short recheck before believing a failure).
   A closed browser becomes `webdev.real_browser_disconnected` with Reconnect; when
@@ -201,6 +210,10 @@ interface PickedElement {
 Base (renamed from the upstream, present in T1):
 
 `webdev_navigate`, `webdev_click`, `webdev_type`, `webdev_press`, `webdev_scroll`, `webdev_snapshot`, `webdev_screenshot`, `webdev_console`, `webdev_network`, `webdev_tabs`, `webdev_close`.
+
+Source control (B1/B2):
+
+`webdev_open_isolated { url? }` — the explicit switch to the browser the Host launches itself, so an agent can recover from `webdev.real_browser_unavailable` in the same turn; `webdev_electron_attach { endpoint }` / `webdev_electron_detach` — attach to an existing renderer over CDP and return to the configured source.
 
 Desktop family (P5, routed through the panel socket to the native guest):
 

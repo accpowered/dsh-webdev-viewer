@@ -114,3 +114,15 @@ Wire contract: `reconnect`, `open-isolated { url? }`, `use-configured` commands 
 
 Tests: 236 passed / 17 files (`tests/host/real-browser-unavailable.spec.ts` is new and covers classification, the state route shape, reconnect, open-isolated + use-configured, the disconnect/recovery cycle and the panel-not-mounted path; `tests/host/native-style.spec.ts` covers the agent-side style bridge). `pnpm typecheck`, `pnpm build`, `pnpm pack` pass. The panel was checked in the running GUI (screenshots captured during verification; the zero state, the isolated switch and the mid-session disconnect were observed live).
 
+## Follow-up (2026-11-19, B2): the agent gets the same switch
+
+The zero state unblocked a *person* only. An agent whose tool call failed with `webdev.real_browser_unavailable` had no equivalent action: the panel button was the sole way to switch, so recovery cost a full turn, a human click and a second turn — and a scheduled or overnight run simply failed. This is GitHub issue #3, and the fix is a wiring job, not a new capability: `BrowserViewService.openIsolated` already switched the source, reopened the session and broadcast the state.
+
+- `webdev_open_isolated { url? }` is the agent-side twin of **Open in isolated Chromium**. It calls the same `openIsolated`, returns `{ mode, switched, url?, tabs, activeTabId, summary }`, and opens `url` in the launched browser. `switched` tells "the carrier changed" apart from "the isolated Chromium was already the carrier".
+- `openIsolated` is now idempotent for the already-selected source: it keeps the live browser and its tabs instead of reconfiguring them away, and only pushes a state frame when the carrier really changed.
+- A launch failure is a tool failure, not a silent success: `webdev.isolated_browser_unavailable` plus its classified `reason` (`not_installed` on a host with no binary), read back from the state the failed launch recorded, so the caller is not told it switched when it did not.
+- `RealBrowserUnavailableError` names the next step in prose and carries `nextStep: "webdev_open_isolated"` in its JSON line; the `webdev_tabs` description points at the tool as well. A call that never read this ticket can still recover.
+- Nothing falls back on its own: no ordinary tool changes the source, exactly as B1 left it.
+
+Tests: `tests/host/open-isolated-tool.spec.ts` (6 cases: same-turn recovery after the classified failure, the named page really opens in the launched browser, an idempotent re-call keeps the tabs and pushes no redundant state, `not_installed` fails fast without hanging, ordinary tools never switch, and the declared schema). `tests/host/cdp-endpoint.spec.ts` now asserts the `nextStep` field. `pnpm typecheck`, `pnpm build`, `pnpm pack` pass; 246 of 248 Host/core tests pass in the agent sandbox (the two `removeTempProfile` cases need OS temp/home write access the sandbox denies).
+

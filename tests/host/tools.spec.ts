@@ -88,7 +88,7 @@ function build(options: { saveImage?: boolean } = {}) {
 }
 
 describe('tool catalog', () => {
-  it('operator lists the tool surface and exactly the eleven documented tools are registered', () => {
+  it('operator lists the tool surface and exactly the documented tools are registered', () => {
     // Given the tool surface built over the fake browser
     // When the tool names are read
     // Then they equal the documented name list exactly
