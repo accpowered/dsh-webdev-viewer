@@ -51,6 +51,16 @@ export interface FakeBrowserOptions {
    * @default { width: 1600, height: 1000 }
    */
   layoutViewport?: { width: number; height: number }
+  /**
+   * The page scroll the fake page reports; a clip has to be translated by it.
+   * @default { x: 0, y: 0 }
+   */
+  pageScroll?: { x: number; y: number }
+  /**
+   * Answer one `Runtime.evaluate` before the built-in fake responses do; return
+   * undefined to keep the snapshot/navigation fixtures.
+   */
+  evaluate?: (expression: string, params: Record<string, unknown>) => unknown
 }
 
 /**
@@ -70,11 +80,20 @@ export function createFakeBrowser(options: FakeBrowserOptions = {}): FakeBrowser
   // Only an unpinned (adopted real-browser) tab ever asks for this; the answer
   // is the window-sized viewport the page really renders.
   const layoutViewport = options.layoutViewport ?? { width: 1600, height: 1000 }
+  const pageScroll = options.pageScroll ?? { x: 0, y: 0 }
   transport.responses.set('Page.getLayoutMetrics', {
     cssLayoutViewport: { clientWidth: layoutViewport.width, clientHeight: layoutViewport.height },
+    cssVisualViewport: {
+      pageX: pageScroll.x,
+      pageY: pageScroll.y,
+      clientWidth: layoutViewport.width,
+      clientHeight: layoutViewport.height,
+    },
   })
   transport.responses.set('Runtime.evaluate', (params: Record<string, unknown>) => {
     const expression = String(params.expression ?? '')
+    const custom = options.evaluate?.(expression, params)
+    if (custom !== undefined) return custom
     if (expression.includes('document.querySelector')) {
       return { result: { value: { ok: true, x: 12, y: 34, tag: 'button', name: 'Go' } } }
     }

@@ -15,6 +15,7 @@ interface BrowserConfigValues {
   realBrowserEnabled?: unknown
   cdpEndpoint?: unknown
   idleCloseDays?: unknown
+  fallbackOnUnavailable?: unknown
 }
 
 /** The row configuration form backed by the Host's volatile settings namespace. */
@@ -25,6 +26,7 @@ export function BrowserViewConfig({ t, view, form }: PropsLocale<'webdev'> & Plu
     ? values.cdpEndpoint
     : 'http://127.0.0.1:9222'
   const idleDays = typeof values?.idleCloseDays === 'number' ? values.idleCloseDays : 3
+  const autoFallback = values?.fallbackOnUnavailable === 'isolated'
   const [draft, setDraft] = useState(endpoint)
   const [idleDraft, setIdleDraft] = useState(String(idleDays))
   const [pending, setPending] = useState(false)
@@ -110,6 +112,23 @@ export function BrowserViewConfig({ t, view, form }: PropsLocale<'webdev'> & Plu
         />
       </label>
       <p className={css.hint}>{t('config.idleCloseDays.hint')}</p>
+      <label className={css.switchRow}>
+        <input
+          type="checkbox"
+          role="switch"
+          checked={autoFallback}
+          disabled={disabled}
+          onChange={(event) => {
+            void mutate([{
+              op: 'set',
+              path: ['fallbackOnUnavailable'],
+              value: event.currentTarget.checked ? 'isolated' : 'never',
+            }])
+          }}
+        />
+        <span>{t('config.fallbackOnUnavailable')}</span>
+      </label>
+      <p className={css.hint}>{t('config.fallbackOnUnavailable.hint')}</p>
       {failed && <p className={css.error} role="alert">{t('config.failed')}</p>}
     </section>
   )

@@ -20,6 +20,15 @@
  */
 
 import type { CdpTransport } from './cdp.ts'
+import {
+  buildEvalParams,
+  evalTimeoutOf,
+  readEvalOutcome,
+  type EvalOutcome,
+  type EvalRequest,
+  type RawEvalPayload,
+} from './eval.ts'
+import { buildMeasureExpression, readMeasureReport, type MeasureReport } from './measure.ts'
 import { PAGE_PICKER_BINDING, PAGE_PICKER_SCRIPT } from './page-picker.ts'
 import {
   DEFAULT_JPEG_QUALITY,
@@ -29,7 +38,7 @@ import {
   type BrowserNetworkEntry,
   type BrowserTabView,
 } from './protocol.ts'
-import type { CdpScreenshotParams } from './screenshot.ts'
+import type { CdpScreenshotParams, PageOffset } from './screenshot.ts'
 
 /**
  * Largest side a screencast frame is allowed to have, in CSS pixels.
@@ -53,6 +62,15 @@ export const SCREENCAST_MAX_SIDE = 4096
  * gives the panel real detail without paying for a screenshot on every frame.
  */
 export const CRISP_FRAME_SETTLE_MS = 200
+
+/**
+ * How long one `webdev_measure` may run in the page.
+ *
+ * Measuring is a synchronous walk over one element and its ancestors, so this
+ * is a hang guard rather than a budget: anything near it means the page is
+ * blocked (a modal, a busy loop) and the caller should hear that.
+ */
+export const MEASURE_TIMEOUT_MS = 5_000
 
 /** One JPEG frame as the panel receives it. */
 export interface ScreencastFrame {
@@ -186,6 +204,60 @@ interface LoadingFailedParams {
 /** Params of one `Page.frameNavigated` event. */
 interface FrameNavigatedParams {
   frame?: { url?: unknown; parentId?: unknown; loaderId?: unknown }
+}
+
+/** The part of `Page.getLayoutMetrics` this package reads. */
+interface LayoutMetricsPayload {
+  /** Modern metric shape, CSS pixels. */
+  cssLayoutViewport?: { clientWidth?: unknown; clientHeight?: unknown }
+  /** Legacy metric shape, CSS pixels. */
+  layoutViewport?: { clientWidth?: unknown; clientHeight?: unknown }
+  /** Modern visual viewport, which also carries the page scroll. */
+  cssVisualViewport?: { pageX?: unknown; pageY?: unknown }
+  /** Legacy visual viewport name. */
+  visualViewport?: { pageX?: unknown; pageY?: unknown }
+}
+
+/**
+ * Read the page scroll out of one layout-metrics payload.
+ *
+ * `pageX`/`pageY` are the visual viewport's origin in page coordinates, which is
+ * exactly the translation a viewport-relative clip needs. A payload without them
+ * reports no scroll rather than guessing one.
+ * @param metrics - raw `Page.getLayoutMetrics` result.
+ * @returns the scroll offset in CSS pixels.
+ */
+function pageOffsetFrom(metrics: LayoutMetricsPayload): PageOffset {
+  const viewport = metrics.cssVisualViewport ?? metrics.visualViewport
+  const x = typeof viewport?.pageX === 'number' && Number.isFinite(viewport.pageX) ? viewport.pageX : 0
+  const y = typeof viewport?.pageY === 'number' && Number.isFinite(viewport.pageY) ? viewport.pageY : 0
+  return { x: Math.round(x), y: Math.round(y) }
+}
+
+/**
+ * Resolve with a promise's value, or reject when it takes too long.
+ *
+ * A page script can never settle (`while (true) {}` in an `awaitPromise`), and
+ * an evaluate that waits forever is indistinguishable from a hung host. The
+ * deadline is the caller's, so the message names it.
+ * @param pending - the protocol call.
+ * @param timeoutMs - how long to wait.
+ * @param message - error text when the deadline passes.
+ * @returns the promise's value.
+ * @throws when the deadline passes first.
+ */
+async function withDeadline<T>(pending: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => { reject(new Error(message)) }, timeoutMs)
+    const unref = (timer as unknown as { unref?: () => void }).unref
+    if (typeof unref === 'function') unref.call(timer)
+  })
+  try {
+    return await Promise.race([pending, deadline])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
 }
 
 /**
@@ -649,16 +721,27 @@ export class TabManager {
    */
   async refreshFrame(tabId: string): Promise<ScreencastFrame> {
     const record = this.requireRecord(tabId)
-    const viewport = await this.frameViewport(record)
     const dpr = record.deviceScaleFactor ?? 1
     // The encoded image carries device pixels; the frame's own width/height
     // stay CSS pixels, so the panel lays it out 1:1 and maps input in the same
-    // coordinate space it always did.
-    const data = dpr > 1
+    // coordinate space it always did. The clip is translated by the page scroll:
+    // CDP reads clip in page coordinates, so a scrolled page would otherwise
+    // bring back a different region than the one this frame claims to show.
+    // Only the scaled path needs that translation, so a pinned 1x tab still
+    // answers from configuration without a protocol round-trip.
+    const metrics = dpr > 1 ? await this.frameMetrics(record) : undefined
+    const viewport = metrics?.viewport ?? await this.frameViewport(record)
+    const data = dpr > 1 && metrics !== undefined
       ? await this.captureScreenshot(tabId, {
         format: 'png',
         captureBeyondViewport: false,
-        clip: { x: 0, y: 0, width: viewport.width, height: viewport.height, scale: dpr },
+        clip: {
+          x: metrics.pageOffset.x,
+          y: metrics.pageOffset.y,
+          width: viewport.width,
+          height: viewport.height,
+          scale: dpr,
+        },
       })
       : await this.captureScreenshot(tabId)
     record.frameSeq += 1
@@ -720,28 +803,119 @@ export class TabManager {
    */
   async viewportOf(tabId: string): Promise<{ width: number; height: number }> {
     const record = this.requireRecord(tabId)
-    return await this.frameViewport(record)
+    if (record.viewportOverride !== undefined) return record.viewportOverride
+    if (this.pinViewports) return this.viewport
+    return (await this.frameMetrics(record)).viewport
   }
 
-  /** Read the real CSS viewport without changing it in external-browser mode. */
+  /**
+   * Read the CSS viewport a capture of this tab would render, without asking a
+   * pinned tab for anything.
+   * @param record - the tab.
+   * @returns the viewport in CSS pixels.
+   */
   private async frameViewport(record: TabRecord): Promise<{ width: number; height: number }> {
     if (record.viewportOverride !== undefined) return record.viewportOverride
     if (this.pinViewports) return this.viewport
+    return (await this.frameMetrics(record)).viewport
+  }
+
+  /**
+   * Report the viewport a capture renders and the page scroll it sits at.
+   *
+   * `Page.captureScreenshot` reads a clip in page coordinates, while every tool
+   * in this package speaks viewport-relative CSS pixels. A scrolled page is what
+   * made a clip of `(722, 350)` come back as the top-left corner: the two
+   * coordinate spaces differ by exactly the scroll offset, and nothing reported
+   * it. Both numbers therefore come out of one read: when the tab is pinned the
+   * viewport is known already and only the scroll costs a round-trip.
+   * @param tabId - target tab.
+   * @returns the CSS viewport and the page scroll in CSS pixels.
+   */
+  async metricsOf(tabId: string): Promise<{ viewport: { width: number; height: number }; pageOffset: PageOffset }> {
+    const record = this.requireRecord(tabId)
+    return await this.frameMetrics(record)
+  }
+
+  /**
+   * Evaluate one expression in the tab's main world.
+   *
+   * The expression is the caller's own code and runs with the page's authority,
+   * so the result is capped and the deadline is enforced by the host: a page
+   * that never settles must not hold the tool call forever.
+   * @param tabId - target tab.
+   * @param request - expression, promise policy, and deadline.
+   * @returns the normalized value.
+   * @throws when the expression throws or does not settle in time.
+   */
+  async evaluate(tabId: string, request: EvalRequest): Promise<EvalOutcome> {
+    const record = this.requireRecord(tabId)
+    const timeoutMs = evalTimeoutOf(request)
+    const pending = this.transport.send<RawEvalPayload>(
+      'Runtime.evaluate',
+      buildEvalParams(request),
+      record.sessionId,
+    )
+    return readEvalOutcome(await withDeadline(pending, timeoutMs, `the expression did not settle within ${timeoutMs} ms`))
+  }
+
+  /**
+   * Measure one element, or the page's own boxes when no selector is given.
+   *
+   * The page computes the numbers: `getBoundingClientRect()` and the computed
+   * style that produced it are the ground truth a screenshot cannot provide.
+   * @param tabId - target tab.
+   * @param selector - CSS selector to measure, or null for page metrics only.
+   * @returns the measurement report.
+   * @throws when the page throws or the selector is unusable.
+   */
+  async measure(tabId: string, selector: string | null): Promise<MeasureReport> {
+    const record = this.requireRecord(tabId)
+    const pending = this.transport.send<RawEvalPayload>(
+      'Runtime.evaluate',
+      { expression: buildMeasureExpression(selector), returnByValue: true },
+      record.sessionId,
+    )
+    return readMeasureReport(await withDeadline(pending, MEASURE_TIMEOUT_MS, `the page did not answer the measurement within ${MEASURE_TIMEOUT_MS} ms`))
+  }
+
+  /** Read the viewport and page scroll without changing either. */
+  private async frameMetrics(record: TabRecord): Promise<{ viewport: { width: number; height: number }; pageOffset: PageOffset }> {
+    const overridden = record.viewportOverride
+    if (overridden !== undefined) {
+      // Pinned: the size is known, only the scroll is not.
+      return { viewport: overridden, pageOffset: await this.pageOffsetOf(record) }
+    }
+    if (this.pinViewports) return { viewport: this.viewport, pageOffset: await this.pageOffsetOf(record) }
     try {
-      const metrics = await this.transport.send<{
-        cssLayoutViewport?: { clientWidth?: unknown; clientHeight?: unknown }
-        layoutViewport?: { clientWidth?: unknown; clientHeight?: unknown }
-      }>('Page.getLayoutMetrics', {}, record.sessionId)
-      const viewport = metrics.cssLayoutViewport ?? metrics.layoutViewport
-      if (typeof viewport?.clientWidth === 'number' && typeof viewport.clientHeight === 'number'
-        && viewport.clientWidth > 0 && viewport.clientHeight > 0) {
-        return { width: Math.round(viewport.clientWidth), height: Math.round(viewport.clientHeight) }
+      const metrics = await this.layoutMetrics(record)
+      const layout = metrics.cssLayoutViewport ?? metrics.layoutViewport
+      if (typeof layout?.clientWidth === 'number' && typeof layout.clientHeight === 'number'
+        && layout.clientWidth > 0 && layout.clientHeight > 0) {
+        return {
+          viewport: { width: Math.round(layout.clientWidth), height: Math.round(layout.clientHeight) },
+          pageOffset: pageOffsetFrom(metrics),
+        }
       }
     } catch {
       // A page mid-navigation can reject metrics; the configured size is only a
       // display fallback and is never written back through device emulation.
     }
-    return this.viewport
+    return { viewport: this.viewport, pageOffset: { x: 0, y: 0 } }
+  }
+
+  /** Read the page scroll of one tab; a page that cannot answer reports zero. */
+  private async pageOffsetOf(record: TabRecord): Promise<PageOffset> {
+    try {
+      return pageOffsetFrom(await this.layoutMetrics(record))
+    } catch {
+      return { x: 0, y: 0 }
+    }
+  }
+
+  /** One `Page.getLayoutMetrics` for a tab. */
+  private async layoutMetrics(record: TabRecord): Promise<LayoutMetricsPayload> {
+    return await this.transport.send<LayoutMetricsPayload>('Page.getLayoutMetrics', {}, record.sessionId)
   }
 
   /**

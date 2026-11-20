@@ -126,3 +126,24 @@ The zero state unblocked a *person* only. An agent whose tool call failed with `
 
 Tests: `tests/host/open-isolated-tool.spec.ts` (6 cases: same-turn recovery after the classified failure, the named page really opens in the launched browser, an idempotent re-call keeps the tabs and pushes no redundant state, `not_installed` fails fast without hanging, ordinary tools never switch, and the declared schema). `tests/host/cdp-endpoint.spec.ts` now asserts the `nextStep` field. `pnpm typecheck`, `pnpm build`, `pnpm pack` pass; 246 of 248 Host/core tests pass in the agent sandbox (the two `removeTempProfile` cases need OS temp/home write access the sandbox denies).
 
+## Follow-up (2026-11-20, B3): DOM truth, and screenshots that say what they are
+
+The `workAgent_Recap` handoff (2026-11-20, §S/§Q, GitHub issues #1 and #2) kept hitting two limits of this viewer while reviewing another app: the only way to read a real `getBoundingClientRect()` out of a sidebar tab was to write a script into the page's build output and read the console back, and a screenshot could disagree with the page about its own scale. Both are now tool-shaped.
+
+- `webdev_eval { expression, await_promise?, timeout_ms? }` evaluates in the tab's main world (`returnByValue`, promises awaited by default), returns JSON-carryable values, marks a node/function/collection `unserializable` with CDP's description, cuts a long value at 16 000 characters with `truncated`/`chars`, and fails as `webdev.eval_failed` when the expression throws. The host enforces the deadline (default 5 s, max 30 s), so a page that never settles cannot hold the call.
+- `webdev_measure { selector? | ref? }` reports the layout engine's own answer in the tool's CSS space: `rect` (viewport-relative), `documentRect`, `visible`, a computed-style subset, the element's scroll box, and `clippedBy` (the ancestors whose `overflow` really cuts it, with pixels hidden). With no target it reports page metrics (`document.overflowX/overflowY`). A `ref` resolves through the last snapshot exactly like a click.
+- A screenshot now carries its provenance: `cssViewport`, `region`, `pageScroll`, `scale`, and the size read back from the encoded image header (`warning: "image-size-mismatch"` when the bytes disagree with the plan). CDP reads a clip in page coordinates, so the plan translates a viewport-relative clip by `cssVisualViewport.pageX/pageY`; that mismatch is the most plausible cause of a clip returning the top-left corner on a scrolled page.
+- The panel pins the page to its own content box instead of the letterboxed image rect. The old pairing (viewport measured from the image, image sized by the viewport) is a feedback loop, and it matches the "807×939 ↔ 1343×887" alternation the handoff captured.
+
+Tests: `tests/core/eval.spec.ts`, `tests/core/measure.spec.ts`, `tests/core/image-size.spec.ts`, the clip-translation cases in `tests/core/screenshot.spec.ts`, `tests/host/eval-measure-tools.spec.ts` (tool contracts: value, throw, unserializable, selector, ref, page-only), and the scrolled-clip case in `tests/host/service.spec.ts`. Live verification in a real browser was not possible from the agent shell (it cannot launch a browser: crashpad/ACL denial), so the end-to-end run is the user's hard-refresh pass; the fakes drive the production service and tab manager.
+
+## Follow-up (2026-11-20, B4): the profile may pre-declare the downgrade
+
+`fallbackOnUnavailable: "never" | "isolated"` is the P3 half of issue #3: an unattended profile can say in advance that "the configured real browser is not there" should not end the run. It is still a visible switch.
+
+- Fires only for `econnrefused` / `not_cdp` / `timeout`; an unclassified failure never changes the source.
+- Records `state.autoFallback { from, reason, at, endpoint }`, the panel shows a muted **Auto fallback** note beside the mode label with the reason in its title and the one-click `use-configured` way back, and `webdev_tabs` returns `mode` and `autoFallback`.
+- A settings edit drops the recorded fallback and the automatic manual choice, so the edited profile gets the next attempt. With the viewer on the isolated carrier the real-browser liveness probe stops, which is why the way back is a visible control rather than a background re-attach.
+
+Tests: `tests/host/auto-fallback.spec.ts` (visible downgrade and its record, no fallback on the default, no guessing on an unclassified failure, `use-configured` clearing it, a settings edit clearing the automatic choice) and the `fallbackOnUnavailable` schema case in `tests/host/cdp-endpoint.spec.ts`.
+

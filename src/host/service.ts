@@ -26,7 +26,10 @@ import type { CdpConnectOptions, CdpTransport } from '../core/cdp.ts'
 import { ChromeProcess, resolveChromePath } from '../core/chrome.ts'
 import { TabManager, type ScreencastFrame } from '../core/tabs.ts'
 import { buildSnapshot, type SnapshotResult } from '../core/snapshot.ts'
-import { planScreenshot, type ScreenshotPlan, type ScreenshotRequest } from '../core/screenshot.ts'
+import { planScreenshot, type PageOffset, type ScreenshotPlan, type ScreenshotRequest } from '../core/screenshot.ts'
+import { imageSizeOf, type ImageSize } from '../core/image-size.ts'
+import type { EvalOutcome, EvalRequest } from '../core/eval.ts'
+import type { MeasureReport } from '../core/measure.ts'
 import { dispatchInput } from '../core/input.ts'
 import { pickElement } from '../core/pick.ts'
 import { DOCUMENT_TEXT_EXPRESSION, isAuthChallengeText, isLoopbackTarget } from './auth.ts'
@@ -57,7 +60,9 @@ import {
   SNAPSHOT_NODE_LIMIT,
   parsePreviewKey,
   previewKey,
+  type AutoFallbackMode,
   type BrowserActionTrace,
+  type BrowserAutoFallback,
   type BrowserConsoleEntry,
   type BrowserFailure,
   type BrowserFailureReason,
@@ -177,9 +182,35 @@ export interface BrowserViewServiceOptions {
    * @default a one-time probe of the installed browser binaries
    */
   chromeAvailable?: () => boolean
+  /**
+   * What to do when the configured real browser cannot be reached: `never`
+   * reports the classified failure, `isolated` pre-declares the explicit
+   * downgrade so an unattended session keeps working.
+   *
+   * `isolated` still produces a *visible* switch: the state carries
+   * `autoFallback { from, reason, at, endpoint }`, the panel names it next to the
+   * mode label, and the one-click way back to the configured browser stays.
+   * Only the reasons that mean "nobody is listening" qualify
+   * ({@link AUTO_FALLBACK_REASONS}).
+   * @default () => 'never'
+   */
+  fallbackOnUnavailable?: () => AutoFallbackMode
   /** Browser factory, replaced by tests. */
   openSession?: (options: OpenSessionOptions) => Promise<BrowserSession>
 }
+
+/**
+ * Classified reasons that may trigger the pre-declared downgrade.
+ *
+ * These three mean the configured browser is not there to talk to. A failure the
+ * host could not classify is not one of them: guessing would turn an unknown
+ * bug into a silent source change.
+ */
+export const AUTO_FALLBACK_REASONS: ReadonlySet<BrowserFailureReason> = new Set<BrowserFailureReason>([
+  'econnrefused',
+  'not_cdp',
+  'timeout',
+])
 
 /** Start the default isolated Chrome and wrap it in a session. */
 async function openIsolatedSession(options: OpenSessionOptions): Promise<BrowserSession> {
@@ -438,6 +469,14 @@ export class BrowserViewService implements BrowserViewBackend {
   private readonly livenessIntervalMs: number
   private readonly livenessProbe: (endpoint: CdpEndpoint) => Promise<boolean>
   private readonly chromeAvailable: () => boolean
+  /** Profile's pre-declared response when the real browser is not reachable. */
+  private readonly fallbackOnUnavailable: () => AutoFallbackMode
+  /**
+   * The last automatic downgrade, kept until the carrier really changes again:
+   * the panel and the route read it, so a viewer that is in the isolated
+   * browser because its real one was missing always says so.
+   */
+  private lastFallback: BrowserAutoFallback | undefined
   private livenessTimer: ReturnType<typeof setInterval> | undefined
   /** One in-flight liveness check, so a slow probe never stacks up. */
   private probing = false
@@ -521,6 +560,7 @@ export class BrowserViewService implements BrowserViewBackend {
     this.livenessProbe = options.livenessProbe
       ?? (endpoint => probeCdpEndpoint(endpoint, { timeoutMs: LIVENESS_PROBE_TIMEOUT_MS }))
     this.chromeAvailable = options.chromeAvailable ?? (() => resolveChromePath() !== undefined)
+    this.fallbackOnUnavailable = options.fallbackOnUnavailable ?? (() => 'never')
     if (this.livenessIntervalMs > 0) {
       const timer: ReturnType<typeof setInterval> = setInterval(() => {
         void this.checkLiveness().catch(() => undefined)
@@ -561,6 +601,7 @@ export class BrowserViewService implements BrowserViewBackend {
       state.message = this.lastFailure.message
     }
     if (this.failedAttempts > 0) state.attempts = this.failedAttempts
+    if (this.lastFallback !== undefined) state.autoFallback = { ...this.lastFallback }
     const preview = this.previewState()
     if (preview !== undefined) state.preview = preview
     return state
@@ -1566,6 +1607,60 @@ export class BrowserViewService implements BrowserViewBackend {
   }
 
   /**
+   * Evaluate one expression in the tab.
+   *
+   * This is the tool behind the "no more guessing from pixels" rule: when the
+   * question is `getBoundingClientRect()` or a computed style, the page answers
+   * it directly instead of the caller editing a build artifact and reading the
+   * console back. The expression runs with the page's own authority, so the tool
+   * description says the page may lie and the result is untrusted data.
+   * @param sessionId - calling agent session.
+   * @param tabId - explicit tab.
+   * @param request - expression, promise policy, and deadline.
+   * @returns the tab and the normalized value.
+   */
+  async evaluate(
+    sessionId: string | undefined,
+    tabId: string | undefined,
+    request: EvalRequest,
+  ): Promise<{ tabId: string; url: string; title: string; outcome: EvalOutcome }> {
+    return await this.runWithSession(async () => {
+      const tab = await this.doTabFor(sessionId, tabId)
+      const outcome = await this.scope().tabs.evaluate(tab.id, request)
+      const current = this.scope().tabs.list().find(candidate => candidate.id === tab.id) ?? tab
+      return { tabId: current.id, url: current.url, title: current.title, outcome }
+    })
+  }
+
+  /**
+   * Measure one element, or the page's own boxes when no selector is given.
+   *
+   * The selector comes from the caller; a `ref` is resolved through the last
+   * snapshot's map first, exactly like a click, so measuring the element the
+   * model just looked at needs no selector guesswork.
+   * @param sessionId - calling agent session.
+   * @param tabId - explicit tab.
+   * @param target - selector, or a snapshot ref, or neither for page metrics.
+   * @returns the tab and the measurement.
+   */
+  async measure(
+    sessionId: string | undefined,
+    tabId: string | undefined,
+    target: { selector?: string; ref?: number },
+  ): Promise<{ tabId: string; url: string; title: string; report: MeasureReport }> {
+    return await this.runWithSession(async () => {
+      const tab = await this.doTabFor(sessionId, tabId)
+      const tabs = this.scope().tabs
+      const selector = target.selector !== undefined
+        ? target.selector
+        : target.ref !== undefined ? tabs.selectorForRef(tab.id, target.ref) : null
+      const report = await tabs.measure(tab.id, selector)
+      const current = tabs.list().find(candidate => candidate.id === tab.id) ?? tab
+      return { tabId: current.id, url: current.url, title: current.title, report }
+    })
+  }
+
+  /**
    * Capture one image of the tab.
    *
    * The plan decides everything the caller is told about the bytes: the format
@@ -1594,6 +1689,12 @@ export class BrowserViewService implements BrowserViewBackend {
     mediaType: ScreenshotPlan['mediaType']
     width: number
     height: number
+    scale: number
+    viewport: { width: number; height: number }
+    pageOffset: PageOffset
+    region: ScreenshotPlan['region']
+    actual?: ImageSize
+    warning?: 'image-size-mismatch'
   }> {
     return await this.runWithSession(async () => {
       const tab = await this.doTabFor(sessionId, tabId)
@@ -1602,18 +1703,48 @@ export class BrowserViewService implements BrowserViewBackend {
       // a tab adopted from a real browser keeps its window's viewport, so a clip
       // that fits the page would be refused and the reported pixel size would
       // describe an image that was never produced.
-      const viewport = await tabs.viewportOf(tab.id)
-      const plan = planScreenshot(viewport, request, this.jpegQuality)
-      const data = await tabs.captureScreenshot(tab.id, plan.params)
+      //
+      // The page scroll is only read when the capture sends a clip, because that
+      // is the only case CDP needs page coordinates for; a plain viewport capture
+      // therefore still costs a pinned tab no protocol round-trip.
+      const wantsClip = request.clip !== undefined || (request.scale !== undefined && request.scale > 1)
+      let viewport = await tabs.viewportOf(tab.id)
+      let pageOffset: PageOffset = wantsClip ? (await tabs.metricsOf(tab.id)).pageOffset : { x: 0, y: 0 }
+      const capture = async (at: PageOffset): Promise<{ plan: ScreenshotPlan; data: string; actual?: ImageSize }> => {
+        const plan = planScreenshot(viewport, request, this.jpegQuality, at)
+        const data = await tabs.captureScreenshot(tab.id, plan.params)
+        return { plan, data, actual: imageSizeOf(Buffer.from(data, 'base64')) }
+      }
+      let shot = await capture(pageOffset)
+      // One retry when the page moved between reading its metrics and the
+      // capture: a resize or a scroll in that window makes the image describe a
+      // different rectangle than the plan, and the caller has no way to tell.
+      if (shot.actual !== undefined && (shot.actual.width !== shot.plan.width || shot.actual.height !== shot.plan.height)) {
+        const fresh = await tabs.metricsOf(tab.id)
+        viewport = fresh.viewport
+        pageOffset = fresh.pageOffset
+        shot = await capture(pageOffset)
+      }
       const current = tabs.list().find(candidate => candidate.id === tab.id) ?? tab
+      const matched = shot.actual !== undefined
+        && shot.actual.width === shot.plan.width
+        && shot.actual.height === shot.plan.height
       return {
         tabId: current.id,
         url: current.url,
         title: current.title,
-        data,
-        mediaType: plan.mediaType,
-        width: plan.width,
-        height: plan.height,
+        data: shot.data,
+        mediaType: shot.plan.mediaType,
+        width: shot.plan.width,
+        height: shot.plan.height,
+        scale: shot.plan.scale,
+        viewport: { ...viewport },
+        pageOffset: { ...shot.plan.pageOffset },
+        region: { ...shot.plan.region },
+        ...shot.actual === undefined ? {} : { actual: shot.actual },
+        // The honest failure mode: an image that is not the size the plan asked
+        // for is still returned, but the caller is told not to trust its scale.
+        ...shot.actual !== undefined && !matched ? { warning: 'image-size-mismatch' as const } : {},
       }
     })
   }
@@ -1685,6 +1816,14 @@ export class BrowserViewService implements BrowserViewBackend {
     const session = this.forgetSession()
     this.lastFailure = undefined
     this.failedAttempts = 0
+    // An automatic downgrade is not a choice the person made: a settings edit is
+    // a fresh start, so the profile's new configuration gets the first attempt
+    // instead of being shadowed by a fallback from the previous one.
+    if (this.lastFallback !== undefined) {
+      this.lastFallback = undefined
+      this.manualMode = undefined
+      this.manualEndpoint = undefined
+    }
     this.agentPreviewKeys.clear()
     this.panelPreviewKeys.clear()
     if (session !== undefined) await session.dispose()
@@ -1769,6 +1908,10 @@ export class BrowserViewService implements BrowserViewBackend {
     if (this.disposed) return this.state()
     this.manualMode = undefined
     this.manualEndpoint = undefined
+    // Going back is the end of the recorded downgrade: the viewer is asking for
+    // the configured source again, so the note that explains the old carrier
+    // would only describe a state that no longer exists.
+    this.lastFallback = undefined
     await this.reconfigure()
     return this.state()
   }
@@ -1881,6 +2024,7 @@ export class BrowserViewService implements BrowserViewBackend {
   async detachEndpoint(): Promise<void> {
     this.manualEndpoint = undefined
     this.manualMode = undefined
+    this.lastFallback = undefined
     await this.reconfigure()
     if (this.sinks.size > 0) await this.requireSession()
   }
@@ -2057,6 +2201,27 @@ export class BrowserViewService implements BrowserViewBackend {
       return session
     } catch (error) {
       if (generation === this.generation && !this.disposed) {
+        const classified = asClassifiedFailure(error)
+        const reason = classified?.reason ?? classifyBrowserFailure(error)
+        // A profile that pre-declared the downgrade gets it here, once, and only
+        // for a reason that means the configured browser is not there. The
+        // switch is recorded before the restart so the state a panel receives
+        // names both the failure and the carrier it moved to.
+        if (config.mode === 'cdp' && this.fallbackOnUnavailable() === 'isolated' && AUTO_FALLBACK_REASONS.has(reason)) {
+          const failed = this.recordFailure(error, 'browser-connect-failed', config.mode, config.cdpEndpoint, reason)
+          this.lastFallback = {
+            from: 'cdp',
+            reason,
+            at: failed.at,
+            ...failed.endpoint === undefined ? {} : { endpoint: failed.endpoint },
+          }
+          this.manualMode = 'isolated'
+          this.manualEndpoint = undefined
+          this.broadcast({ v: 1, kind: 'state', state: this.state() })
+          // The recursive call resolves the config again: it now reads the
+          // manual isolated choice, so this branch cannot run twice.
+          return await this.startSession()
+        }
         const failure = this.recordFailure(
           error,
           config.mode === 'cdp' ? 'browser-connect-failed' : ISOLATED_BROWSER_UNAVAILABLE_CODE,

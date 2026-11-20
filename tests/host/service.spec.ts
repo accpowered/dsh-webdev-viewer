@@ -447,10 +447,11 @@ describe('screenshot requests', () => {
     expect(shot.data).toBe('JPEG-BYTES')
   })
 
-  it('operator screenshots a clip at the pinned viewport edge and the page is never asked for its metrics', async () => {
+  it('operator screenshots a clip at the pinned viewport edge and the clip is planned against the pinned size', async () => {
     // Given a tab pinned to the default 1280x800 viewport
     // When a clip that reaches the bottom-right corner of that viewport is captured
-    // Then the clip is accepted against the pinned size and no layout-metrics call was made
+    // Then the clip is accepted against the pinned size, and the one layout-metrics
+    // read only exists to learn the page scroll a clip must be translated by
     const browser = createFakeBrowser()
     const tab = await browser.service.ensureTab('session-a')
 
@@ -459,9 +460,36 @@ describe('screenshot requests', () => {
       scale: 1,
     })
 
-    expect(browser.transport.callsOf('Page.getLayoutMetrics')).toHaveLength(0)
+    expect(browser.transport.callsOf('Page.getLayoutMetrics')).toHaveLength(1)
+    expect(browser.transport.lastCall('Page.captureScreenshot')?.params).toEqual({
+      format: 'png',
+      captureBeyondViewport: false,
+      clip: { x: 1180, y: 700, width: 100, height: 100, scale: 1 },
+    })
     expect(shot.width).toBe(100)
     expect(shot.height).toBe(100)
+  })
+
+  it('operator screenshots a clip on a scrolled page and the clip is translated into page coordinates', async () => {
+    // Given a page scrolled down and across, where viewport and page coordinates differ
+    // When a viewport-relative clip is captured
+    // Then CDP receives the clip shifted by the scroll, and the result still
+    // reports the region in the caller's own viewport space
+    const browser = createFakeBrowser({ pageScroll: { x: 40, y: 900 } })
+    const tab = await browser.service.ensureTab('session-a')
+
+    const shot = await browser.service.screenshot('session-a', tab.id, {
+      clip: { x: 100, y: 50, width: 200, height: 100 },
+      scale: 1,
+    })
+
+    expect(browser.transport.lastCall('Page.captureScreenshot')?.params).toEqual({
+      format: 'png',
+      captureBeyondViewport: false,
+      clip: { x: 140, y: 950, width: 200, height: 100, scale: 1 },
+    })
+    expect(shot.region).toEqual({ x: 100, y: 50, width: 200, height: 100 })
+    expect(shot.pageOffset).toEqual({ x: 40, y: 900 })
   })
 
   it('operator screenshots a clip past the configured viewport on a real 1600x1000 page and it is accepted', async () => {

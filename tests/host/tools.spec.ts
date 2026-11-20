@@ -419,7 +419,7 @@ describe('structured results', () => {
     const { byName } = build()
     const tool = byName('webdev_tabs')
     const value = await tool.execute({}, fakeExec()) as { tabs: unknown[]; activeTabId: string | null }
-    expect(value).toEqual({ tabs: [], activeTabId: null })
+    expect(value).toEqual({ tabs: [], activeTabId: null, mode: 'isolated' })
     expect(validateJsonSchemaValue(tool.output.schema, asJson(value))).toEqual([])
     const blocks = tool.output.render({}, asJson(value)) as ContentBlock[]
     expect(blocks).toHaveLength(1)

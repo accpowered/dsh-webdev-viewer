@@ -155,6 +155,36 @@ export interface BrowserPanelState {
    * explicit reset, detach, or reconfigure.
    */
   preview?: BrowserPreviewState
+  /**
+   * The last automatic source change this host made, when the profile
+   * pre-declared one.
+   *
+   * `fallbackOnUnavailable: "isolated"` lets an unattended profile keep working
+   * when the configured real browser is not there. The switch is still a
+   * visible one: this field names the carrier the viewer left and the classified
+   * reason, and the panel shows it beside the mode label so "why am I in the
+   * isolated browser" is never a mystery. Absent until such a switch happens.
+   */
+  autoFallback?: BrowserAutoFallback
+}
+
+/** How a host may react when the configured real browser cannot be reached. */
+export type AutoFallbackMode =
+  /** Report the failure and stay put; the caller switches explicitly. */
+  | 'never'
+  /** Pre-declare the explicit downgrade: switch and report it as `autoFallback`. */
+  | 'isolated'
+
+/** One recorded automatic downgrade of the browser source. */
+export interface BrowserAutoFallback {
+  /** Source the viewer left. */
+  from: 'cdp'
+  /** Classified reason the real browser was not reachable. */
+  reason: BrowserFailureReason
+  /** Millisecond timestamp of the switch. */
+  at: number
+  /** Endpoint that was tried, when one was configured. */
+  endpoint?: string
 }
 
 /** One element carrying at least one temporary style override. */

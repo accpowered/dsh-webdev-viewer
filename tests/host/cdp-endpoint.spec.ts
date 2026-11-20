@@ -19,6 +19,7 @@ describe('real-browser configuration', () => {
       realBrowserEnabled: false,
       cdpEndpoint: 'http://127.0.0.1:9222',
       idleCloseDays: 3,
+      fallbackOnUnavailable: 'never',
     })
   })
 
@@ -27,6 +28,16 @@ describe('real-browser configuration', () => {
     // When the configuration resolves
     // Then the resolved window is seven, not the schema default
     expect(effectiveConfig(Config({ idleCloseDays: 7 })).idleCloseDays).toBe(7)
+  })
+
+  it('operator pre-declares the isolated fallback and the resolved value is the one declared', () => {
+    // Given a profile that opts into the downgrade for unattended runs
+    // When the configuration resolves
+    // Then the declared value survives, and the other two entries keep their defaults
+    const resolved = effectiveConfig(Config({ fallbackOnUnavailable: 'isolated' }))
+    expect(resolved.fallbackOnUnavailable).toBe('isolated')
+    expect(resolved.realBrowserEnabled).toBe(false)
+    expect(resolved.idleCloseDays).toBe(3)
   })
 })
 

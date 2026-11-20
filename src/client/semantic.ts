@@ -35,6 +35,8 @@ export const BROWSER_VIEW_PARTS = {
   status: 'status',
   /** Temporary style-override marker beside the status. */
   preview: 'preview',
+  /** Notice that the browser source was downgraded by the profile's fallback. */
+  autoFallback: 'auto-fallback',
   /** No-frame placeholder. */
   empty: 'empty',
   /** Host-reported failure placeholder. */

@@ -130,6 +130,26 @@ panel and the agent read the same fields:
   A closed browser becomes `webdev.real_browser_disconnected` with Reconnect; when
   the endpoint answers again the Host re-attaches without a tool call.
 
+### Pre-declared downgrade (`fallbackOnUnavailable`)
+
+A profile can pre-declare what an unattended session does when the configured
+real browser is not there:
+
+| Value | Behaviour |
+|---|---|
+| `never` (default) | Report the classified failure. Only a person's click or `webdev_open_isolated` changes the source. |
+| `isolated` | On `econnrefused` / `not_cdp` / `timeout`, switch to the isolated Chromium once and record it in `state.autoFallback { from, reason, at, endpoint }`. |
+
+The switch is still visible, never silent: the panel shows a muted **Auto
+fallback** note beside the mode label (with the reason in its tooltip and the
+one-click way back), and `webdev_tabs` returns `mode` plus `autoFallback`. The
+three qualifying reasons all mean "nobody is answering"; an unclassified failure
+never triggers a source change. A settings edit clears a recorded fallback and
+the automatic choice with it, so the edited profile gets the next attempt; with
+the configured browser still missing the next start simply downgrades again.
+Because the viewer is then on the isolated source, the liveness probe for the
+real browser stops; the way back is the mode button (or `use-configured`).
+
 ### Backpressure
 
 The Host keeps at most one pending frame per tab; when a new frame arrives before the previous send, replace it. The panel drops frames whose `seq` is older than the last painted one. `Page.captureScreenshot` is used for explicit actions/screenshots, not for human feedback.
@@ -139,6 +159,8 @@ The Host keeps at most one pending frame per tab; when a new frame arrives befor
 - **Modes**: `interact` (default) forwards input; `watch` does not. Toolbar toggle; no input is forwarded while a modal/menu is open.
 - **Viewport**: **TBD** between `fit-panel` (emulate the panel content size; default candidate), `1:1 scroll` (pinned 1280×800, panel scrolls), and `presets` (mobile/tablet/desktop). The upstream pinned 1280×800 makes text ~0.31× in a 300–500 px rail, which is unreadable. The decision must be made in P1 with a measured screenshot.
 - **Coordinates**: map from the rendered image rect to frame CSS pixels; CDP input coordinates are CSS pixels. No DPR multiplication unless `Emulation.setDeviceMetricsOverride` changes the scale. The frame's `width/height` are authoritative.
+- **Viewport pinning**: the panel sends its own content box (`width`, `height`, `deviceScaleFactor`). It is the box the frame image fills, never the letterboxed image rect, because a viewport derived from the image closes a feedback loop: image size → viewport → image size. Live frames stay 1× CSS pixels; a settled page is upgraded to a device-scale still with `clip { x: pageOffset, y: pageOffset, width, height, scale: dpr }`.
+- **Clip coordinates**: a `webdev_screenshot` clip is viewport-relative (the snapshot box space). `Page.captureScreenshot` reads a clip in page coordinates, so the plan translates it by the page scroll (`cssVisualViewport.pageX/pageY`) before sending it; the result reports the region in the caller's space, the scroll, the scale, and the image size read back from its header (`warning: image-size-mismatch` when the encoded image disagrees with the plan).
 - **Mouse**: `Input.dispatchMouseEvent` `mouseMoved`/`mousePressed`/`mouseReleased` with `button`, `buttons`, `clickCount`; wheel uses `mouseWheel` with `deltaX/deltaY`. Click focus/hover are real events (the upstream action layer already does this).
 - **Keyboard**: `Input.dispatchKeyEvent` `keyDown`/`keyUp` with `key`/`code`/`windowsVirtualKeyCode`; printable text also uses `char` or `Input.insertText`.
 - **IME**: composition updates use `Input.imeSetComposition`; committed text uses `Input.insertText`. The OS candidate window cannot be positioned at the page caret; the panel shows composition text in its own small overlay. Document this limit.
@@ -215,6 +237,19 @@ Source control (B1/B2):
 
 `webdev_open_isolated { url? }` — the explicit switch to the browser the Host launches itself, so an agent can recover from `webdev.real_browser_unavailable` in the same turn; `webdev_electron_attach { endpoint }` / `webdev_electron_detach` — attach to an existing renderer over CDP and return to the configured source.
 
+DOM truth (issue #2):
+
+`webdev_eval { expression, await_promise?, timeout_ms? }` — evaluate one expression in the tab's main world and return its value as JSON (`Runtime.evaluate`, `returnByValue`, promises awaited by default). A value with no JSON form (a DOM node, a function, a live collection) comes back as `unserializable: true` + CDP's `description`; a long value is cut at 16 000 characters with `truncated: true` and its real `chars`; a throw fails the call as `webdev.eval_failed`. The host enforces the deadline (default 5 s, max 30 s) so a page that never settles cannot hold the call.
+
+`webdev_measure { selector? | ref? }` — the layout-engine answer, in the same CSS space as a snapshot box and a screenshot clip: `rect` (viewport-relative), `documentRect`, `visible`, a computed-style subset, the element's own scroll box, and `clippedBy` (ancestors whose `overflow` really cuts it, with how many pixels). With neither selector nor ref it reports page metrics (`document.overflowX/overflowY`), which is the "is this page wider than its viewport" check. A `ref` is resolved through the last snapshot exactly like a click, then measured.
+
+Why they exist: the only way to read `getBoundingClientRect()` /
+`getComputedStyle()` out of a sidebar tab used to be writing a script into the
+page's build output and reading the console back — impossible on a site whose
+output nobody owns. Both tools are also the rule behind "a screenshot is evidence
+about pixels, not about layout": before claiming something overflows or is
+clipped, measure it.
+
 Desktop family (P5, routed through the panel socket to the native guest):
 
 `webdev_desktop_navigate`, `webdev_desktop_snapshot`, `webdev_desktop_click`, `webdev_desktop_type`, `webdev_desktop_press`, `webdev_desktop_scroll`, `webdev_desktop_console`, `webdev_desktop_network`, `webdev_desktop_screenshot`, and `webdev_desktop_style { selector, action: 'get' | 'set' | 'reset' | 'inspect', relation?: 'self' | 'parent', pseudo?: 'none' | '::before' | '::after', property?, value? }`.
@@ -245,6 +280,7 @@ Volatile fields (live update without remount):
 | `realBrowserEnabled` | false | Attach to an existing Chrome/Edge over CDP |
 | `cdpEndpoint` | `http://127.0.0.1:9222` | Loopback CDP endpoint |
 | `idleCloseDays` | 3 | Idle close for tabs DSH created; 0 disables |
+| `fallbackOnUnavailable` | `never` | `never` reports the classified failure; `isolated` pre-declares the visible downgrade for unattended runs |
 | `viewport` | `fit-panel` (TBD) | Panel-fit, 1:1 scroll, or a preset |
 | `autoReload` | `static` | `static`, `all`, or `off` |
 | `chromePath` | unset | Explicit Chromium/Chrome path |
@@ -258,13 +294,15 @@ Volatile fields (live update without remount):
 - Panel/status/upgrade routes: loopback only; `ctx.connection.requestRejection` (Host/Origin + browser cookie) on every request.
 - Preview: unique cookie for every byte; three-layer containment; deny symlinks/junctions; root guard rails; unique cookie name; no `Cookie` logging.
 - CDP/Electron debug port: loopback only; treat as local code execution; no silent mode fallback.
+- `webdev_eval` runs caller-supplied JavaScript in the page's main world, with the page's own authority (its data, its cookies on `fetch`). It is a developer tool for a page the user already trusts enough to open in this browser; the result is untrusted page data and must never be treated as instructions. It writes nothing to source and no other tool calls it on its own.
+- `webdev_measure` runs a fixed, generated expression; the caller's selector is embedded as a JSON string literal, never as code.
 - Screenshots only through `ctx.attachments.saveImage`; no plugin-owned copies.
 - Runner: detected scripts only by default; arbitrary commands behind a config allowlist; scrub env through the service; no shell interpolation.
 - Page content is untrusted data; never auto-execute page instructions; mark it in tool descriptions/prompt.
 
 ## 13. Failure modes
 
-- Browser launch fails / Chrome missing → clear panel error; no silent fallback.
+- Browser launch fails / Chrome missing → clear panel error; no silent fallback (the only exception is the opt-in `fallbackOnUnavailable: "isolated"`, and that switch is reported in `state.autoFallback` and in the panel).
 - CDP socket closes → replace the session on the next call; external browser only detaches.
 - Panel socket closes → reconnect with backoff; state/frames resume.
 - Preview port in use → next port; token/cookie mismatch → 401; traversal → 403/404; symlink → 403.

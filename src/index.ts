@@ -5,7 +5,7 @@
  * Mounts three surfaces and nothing else:
  *
  * - the status route and the panel WebSocket under /api/dsh-webdev-viewer,
- * - the twenty-eight `webdev_*` agent tools,
+ * - the thirty `webdev_*` agent tools,
  * - one lazily started Chromium that both share (src/host/service.ts).
  *
  * No system-prompt announcement: the repository requires an `announceToAgent`
@@ -140,6 +140,10 @@ export function apply(ctx: Context, config?: RuntimeConfig): void {
     // Read per sweep, so a settings edit applies without a remount and without
     // reconnecting the browser: a threshold change is not a source change.
     idleCloseDays: () => effectiveConfig(config).idleCloseDays,
+    // A profile may pre-declare the isolated downgrade for unattended runs. Read
+    // per attempt, so flipping it applies to the next connection; the switch is
+    // still reported (state.autoFallback) and never silent.
+    fallbackOnUnavailable: () => effectiveConfig(config).fallbackOnUnavailable,
     // A browser closed behind an attached panel must become a visible
     // disconnect with Reconnect, not a frozen frame. Enabled here rather than
     // by default so unit tests never poll a real port.

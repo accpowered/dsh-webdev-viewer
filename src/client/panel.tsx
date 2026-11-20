@@ -499,11 +499,16 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     return () => { host.removeEventListener('wheel', onWheel) }
   }, [frameVisible])
 
-  // Set the page viewport to the pixels the panel actually occupies: the
-  // image's displayed width (object-fit can make it narrower than the host)
-  // and the host's available height. Sending the image's natural height would
-  // leave a short page with a blank strip; sending the host's outer width is
-  // what made an 863px page render into a narrower sidebar.
+  // Set the page viewport to the pixels the panel actually occupies.
+  //
+  // The host box, not the displayed image. The earlier version measured the
+  // image's object-fit content box, but the image's size follows from the page
+  // viewport that same measurement produces: any rounding difference fed back
+  // into the next frame and the two sizes chased each other — the "807x939 ↔
+  // 1343x887" alternation captured in issue #1, and the reason a clip could
+  // come back from a viewport the page had already left. The page is pinned to
+  // the box the image fills, so the aspect ratio follows the box instead of
+  // competing with it.
   //
   // The device scale factor travels with it: the host keeps the CSS viewport at
   // this size but renders captures at the panel's pixel density, so a 1363x963
@@ -513,7 +518,6 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     if (nativeActive) return
     const host = frameHostRef.current
     if (host === null) return
-    const image = imageRef.current
     let timer: ReturnType<typeof setTimeout> | undefined
     let last = { width: 0, height: 0, dpr: 1 }
     const deviceScaleFactor = (): number => {
@@ -521,8 +525,7 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
       return Math.min(3, Math.max(1, Math.round(raw * 100) / 100))
     }
     const send = (): void => {
-      const content = contentRectOf(image)
-      const width = Math.round(content?.width ?? host.clientWidth)
+      const width = Math.round(host.clientWidth)
       const height = Math.round(host.clientHeight)
       const dpr = deviceScaleFactor()
       if (width < 240 || height < 240) return
@@ -536,17 +539,11 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     }
     const observer = new ResizeObserver(() => {
       if (timer !== undefined) clearTimeout(timer)
+      // Debounced so a drag-resize sends one size, not sixty.
       timer = setTimeout(send, 120)
     })
     observer.observe(host)
-    if (image !== null) observer.observe(image)
     send()
-    // A data URL can still be decoding when the effect runs; naturalWidth is 0
-    // until it completes, so retry once after decode instead of quietly
-    // keeping the host size.
-    if (image !== null && image.naturalWidth === 0 && typeof image.decode === 'function') {
-      void image.decode().then(send).catch(() => undefined)
-    }
     return () => {
       observer.disconnect()
       if (timer !== undefined) clearTimeout(timer)
@@ -1167,6 +1164,19 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           ) : (
             <span className={css.mode}>{modeLabel}</span>
           ))}
+          {state.autoFallback !== undefined && (
+            // A profile can pre-declare the downgrade (fallbackOnUnavailable),
+            // so the source changed without a click. Saying so here is what
+            // keeps that switch visible; the mode button beside it is the way
+            // back when the real browser is up again.
+            <span
+              className={css.mode}
+              data-dsh-part={BROWSER_VIEW_PARTS.autoFallback}
+              title={t('panel.autoFallback.hint', { reason: reasonText(state.autoFallback.reason), endpoint: state.autoFallback.endpoint ?? '' })}
+            >
+              {t('panel.autoFallback')}
+            </span>
+          )}
           {!nativeActive && visibleFrame !== null && (
             <span className={css.frameSize} title={t('panel.toolbar.frameHint')}>
               {visibleFrame.width}×{visibleFrame.height} · PNG

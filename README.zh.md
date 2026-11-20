@@ -13,6 +13,8 @@ DeepSeek Harness（DSH）插件：在**右侧栏**里与 agent 一起开发和�
 - 把工作区目录作为静态站点预览，文件变化后自动刷新。
 - 运行项目 dev server（Vite、Next 等），或通过 CDP attach Electron renderer。
 - 给 agent 完整页面信息：带 ref 的 DOM/ARIA snapshot、console、network、截图。
+- 给 agent DOM 真值：`webdev_measure` 返回真实 `getBoundingClientRect()` 盒子、计算样式、滚动盒，以及真正裁掉元素的祖先；`webdev_eval` 可在页面里执行一个表达式。两者的坐标口径与 snapshot 盒子、截图 clip 完全一致，布局结论不必再靠像素猜。截图结果会带上 CSS 视口、实际抓取区域、页面滚动与倍率，并在图片实际尺寸与计划不一致时给出提示。
+- 无人值守可预声明降级：`fallbackOnUnavailable: "isolated"` 时，真实浏览器不可达会切到隔离浏览器一次并明确记录（`state.autoFallback`、状态行「自动降级」、`webdev_tabs` 的 `mode`/`autoFallback`），一键切回仍然保留；默认仍是「只报分类失败、等显式切换」。
 - 真实浏览器不可达时可恢复：面板显示模式、CDP 地址、分类原因与 **重试** /「在隔离浏览器中打开」；agent 侧有同名能力的 `webdev_open_isolated`（失败错误的 JSON 带 `nextStep`），无人值守的会话也能在同一回合内自愈；已经是隔离浏览器时再调用只会复用现有页面，不会重启浏览器。
 - 打开任意 HTTP(S) 网站，包括 loopback 服务。
 - tab 可 floating/fullscreen，也可在 headed Chrome/Electron 窗口中镜像同一页面。

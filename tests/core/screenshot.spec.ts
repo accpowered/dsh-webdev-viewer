@@ -152,3 +152,39 @@ describe('refused requests', () => {
       .toThrow(new RegExp(`would be 7200000 pixels, over the ${SCREENSHOT_MAX_OUTPUT_PIXELS}-pixel output limit; lower the scale or shrink the clip`))
   })
 })
+
+describe('page scroll translation', () => {
+  it('operator captures a clip on a scrolled page and the clip is shifted into page coordinates', () => {
+    // Given a viewport-relative clip and a page scrolled 40 across and 900 down
+    // When the plan is built
+    // Then the CDP clip carries that scroll, while the reported region stays
+    // viewport-relative and the offset is reported beside it
+    const plan = planScreenshot(
+      VIEWPORT,
+      { clip: { x: 100, y: 50, width: 200, height: 100 }, scale: 1 },
+      JPEG_QUALITY,
+      { x: 40, y: 900 },
+    )
+    expect(plan.params.clip).toEqual({ x: 140, y: 950, width: 200, height: 100, scale: 1 })
+    expect(plan.region).toEqual({ x: 100, y: 50, width: 200, height: 100 })
+    expect(plan.pageOffset).toEqual({ x: 40, y: 900 })
+  })
+
+  it('operator zooms the whole viewport on a scrolled page and the synthesized clip is shifted too', () => {
+    // Given a scale-only request on a page scrolled down
+    // When the plan is built
+    // Then the synthesized full-viewport clip is translated like any other
+    const plan = planScreenshot(VIEWPORT, { scale: 2 }, JPEG_QUALITY, { x: 0, y: 300 })
+    expect(plan.params.clip).toEqual({ x: 0, y: 300, width: 1280, height: 800, scale: 2 })
+    expect(plan.region).toEqual({ x: 0, y: 0, width: 1280, height: 800 })
+  })
+
+  it('operator captures the plain viewport and the reported region is the whole viewport', () => {
+    // Given a request with neither clip nor scale
+    // When the plan is built
+    // Then it reports the region a caller would compare a snapshot box against
+    const plan = planScreenshot(VIEWPORT, {}, JPEG_QUALITY)
+    expect(plan.region).toEqual({ x: 0, y: 0, width: 1280, height: 800 })
+    expect(plan.pageOffset).toEqual({ x: 0, y: 0 })
+  })
+})

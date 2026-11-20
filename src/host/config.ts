@@ -7,12 +7,14 @@
 
 import type { Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import type { AutoFallbackMode } from '../core/protocol.ts'
 
 /** Runtime configuration: one live reference per settings field. */
 export interface Config {
   realBrowserEnabled: Volatile<boolean>
   cdpEndpoint: Volatile<string>
   idleCloseDays: Volatile<number>
+  fallbackOnUnavailable: Volatile<AutoFallbackMode>
 }
 
 /** Profile-patch shape before the schema adds defaults and live references. */
@@ -20,6 +22,7 @@ export interface ConfigInput {
   realBrowserEnabled?: boolean
   cdpEndpoint?: string
   idleCloseDays?: number
+  fallbackOnUnavailable?: AutoFallbackMode
 }
 
 /** Values after defaults and live references have been resolved. */
@@ -27,6 +30,7 @@ export interface ResolvedConfig {
   realBrowserEnabled: boolean
   cdpEndpoint: string
   idleCloseDays: number
+  fallbackOnUnavailable: AutoFallbackMode
 }
 
 /** Settings schema exported through the host loader entry. */
@@ -40,6 +44,9 @@ export const Config: z<ConfigInput, Config> = z.object({
   idleCloseDays: z.number().min(0).default(3).volatile().description(
     'Close tabs DSH opened itself once no browser tool has touched them for this many days. Adopted real-browser tabs are never closed; 0 disables the sweep.',
   ),
+  fallbackOnUnavailable: z.union([z.const('never'), z.const('isolated')]).default('never').volatile().description(
+    'What to do when realBrowserEnabled points at a browser nobody started. never reports the classified failure and waits for an explicit switch; isolated pre-declares the downgrade for unattended runs and still reports it as state.autoFallback, with the one-click way back kept.',
+  ),
 })
 
 /** Read the current values, including edits committed without a plugin remount. */
@@ -48,5 +55,6 @@ export function effectiveConfig(config?: Config): ResolvedConfig {
     realBrowserEnabled: config?.realBrowserEnabled?.get() ?? false,
     cdpEndpoint: config?.cdpEndpoint?.get() ?? 'http://127.0.0.1:9222',
     idleCloseDays: config?.idleCloseDays?.get() ?? 3,
+    fallbackOnUnavailable: config?.fallbackOnUnavailable?.get() ?? 'never',
   }
 }

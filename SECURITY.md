@@ -18,6 +18,16 @@ than opening a public issue with exploit details.
   into the repository or sent to a model without the user's action.
 - **The desktop `<webview>` bridge** uses a main-issued partition/lease scoped to the DSH session. The
   panel does not import Electron objects; it only creates the guest tag the shell approves.
+- **`webdev_eval`** evaluates caller-supplied JavaScript in the page's main world, with exactly the
+  authority the page itself has: it can read the page's data and call `fetch` with its cookies (same
+  origin), and it can change the page in memory. It is a developer tool for a page the user chose to open
+  in this browser; it never writes source and no other tool invokes it. Its result is untrusted page data.
+  `webdev_measure` is the fixed alternative: it runs a generated expression that embeds the caller's
+  selector as a JSON string literal, never as code.
+- **`fallbackOnUnavailable: "isolated"`** is the only case in which a browser source changes without a
+  human click, and it is an explicit profile decision, limited to "the configured browser is not there"
+  (`econnrefused` / `not_cdp` / `timeout`). The switch is recorded in `state.autoFallback` and shown in the
+  panel; an unclassified failure never changes the source. The default is `never`.
 - Page content is untrusted. Tool descriptions and the README must treat page text, console output and
   network data as data, not instructions.
 - The repository must never contain credentials. Use the DSH credential manager for tokens and remove

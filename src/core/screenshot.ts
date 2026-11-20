@@ -72,6 +72,18 @@ export interface ScreenshotPlan {
   height: number
   /** Scale the capture renders at. */
   scale: number
+  /** Region the image covers, in CSS pixels relative to the viewport origin. */
+  region: ScreenshotClip
+  /** Page scroll the requested region was translated by, in CSS pixels. */
+  pageOffset: { x: number; y: number }
+}
+
+/** A point in page coordinates. */
+export interface PageOffset {
+  /** Horizontal page scroll. */
+  x: number
+  /** Vertical page scroll. */
+  y: number
 }
 
 /** Matches the attachment service's `normalizedImageMaxPixels`: 2048*2048. */
@@ -186,18 +198,26 @@ function assertOutputSize(width: number, height: number, scale: number): void {
 /**
  * Plan one screenshot capture.
  *
- * Pure: the same three arguments always produce the same plan, and nothing here
- * reads configuration, the clock, or the environment.
+ * The requested rectangle is viewport-relative — the same space `webdev_snapshot`
+ * boxes and `webdev_click` coordinates use — while `Page.captureScreenshot` reads
+ * a clip in *page* coordinates, so a scrolled page would otherwise capture the
+ * region `scroll` pixels away from the one asked for. Translating here keeps that
+ * one correction in the single place that builds CDP parameters.
+ *
+ * Pure: the same arguments always produce the same plan, and nothing here reads
+ * configuration, the clock, or the environment.
  * @param viewport - the CSS-pixel viewport the page is pinned to.
  * @param request - what the caller asked for; every field is optional.
  * @param jpegQuality - quality to request for a JPEG capture, 0-100.
- * @returns the CDP parameters, the media type, and the encoded pixel size.
+ * @param pageOffset - page scroll to translate the clip by. @default none
+ * @returns the CDP parameters, the media type, the encoded pixel size, and the region.
  * @throws when the format, scale, clip, or resulting size cannot be honoured.
  */
 export function planScreenshot(
   viewport: { width: number; height: number },
   request: ScreenshotRequest,
   jpegQuality: number,
+  pageOffset: PageOffset = { x: 0, y: 0 },
 ): ScreenshotPlan {
   const format: ScreenshotFormat = request.format ?? 'png'
   assertFormat(format)
@@ -212,14 +232,19 @@ export function planScreenshot(
   if (clip !== undefined) assertInside(clip, viewport)
   assertOutputSize(width, height, scale)
 
+  const region: ScreenshotClip = clip ?? { x: 0, y: 0, width: viewport.width, height: viewport.height }
   const params: CdpScreenshotParams = { format, captureBeyondViewport: false }
   if (format === 'jpeg') params.quality = jpegQuality
-  if (clip !== undefined) {
-    params.clip = { x: clip.x, y: clip.y, width: clip.width, height: clip.height, scale }
-  } else if (scale > 1) {
+  if (clip !== undefined || scale > 1) {
     // A whole-viewport zoom is the same thing as a clip over the whole viewport,
     // and CDP only accepts a scale as part of a clip.
-    params.clip = { x: 0, y: 0, width: viewport.width, height: viewport.height, scale }
+    params.clip = {
+      x: region.x + Math.round(pageOffset.x),
+      y: region.y + Math.round(pageOffset.y),
+      width: region.width,
+      height: region.height,
+      scale,
+    }
   }
 
   return {
@@ -228,5 +253,7 @@ export function planScreenshot(
     width: width * scale,
     height: height * scale,
     scale,
+    region: { ...region },
+    pageOffset: { x: Math.round(pageOffset.x), y: Math.round(pageOffset.y) },
   }
 }
