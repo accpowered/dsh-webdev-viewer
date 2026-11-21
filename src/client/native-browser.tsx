@@ -147,6 +147,15 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
   const hostRef = useRef<HTMLDivElement | null>(null)
   const webviewRef = useRef<WebviewElement | null>(null)
   const readyRef = useRef(false)
+  /**
+   * The last URL this panel asked the guest to load.
+   *
+   * The guest's own `getURL()` cannot serve as the guard: a preview URL answers
+   * with a redirect, so once the document settles `getURL()` is the final
+   * address and never equals the URL that was requested — a guard built on it
+   * reloads the page on every `dom-ready`, which is an endless flicker.
+   */
+  const requestedRef = useRef<string | null>(null)
   const leaseRef = useRef<DesktopBrowserLeaseId | undefined>(undefined)
   const waitersRef = useRef<Array<() => void>>([])
   const consoleRef = useRef<Array<{ level: string; text: string; at: number }>>([])
@@ -171,10 +180,17 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
     return element
   }
 
-  const load = (url: string): void => {
+  /**
+   * Ask the guest to load one URL, once.
+   * @param url - address to load.
+   * @param force - load it even when it is already the requested address (the
+   *   toolbar's own gesture, where re-typing a URL means a fresh load).
+   */
+  const load = (url: string, force = false): void => {
     const element = webviewRef.current
     if (element === null || url.length === 0) return
-    if (element.getURL() === url) return
+    if (!force && requestedRef.current === url) return
+    requestedRef.current = url
     void element.loadURL(url).catch((error: unknown) => {
       propsRef.current.onError?.(error instanceof Error ? error.message : String(error))
     })
@@ -228,6 +244,9 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
     switch (op) {
       case 'navigate': {
         if (typeof input.url !== 'string' || input.url.length === 0) throw new Error('navigate needs a url')
+        // The agent's own navigation becomes the requested address, so the next
+        // dom-ready does not reload the panel's page over it.
+        requestedRef.current = input.url
         await element.loadURL(input.url)
         return { url: element.getURL(), title: element.getTitle() }
       }
@@ -467,7 +486,7 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
   }
 
   useImperativeHandle(ref, () => ({
-    loadUrl(url: string): void { load(url) },
+    loadUrl(url: string): void { load(url, true) },
     reload(): void { webviewRef.current?.reload() },
     goBack(): void { try { webviewRef.current?.goBack() } catch { /* no history */ } },
     goForward(): void { try { webviewRef.current?.goForward() } catch { /* no history */ } },
@@ -506,6 +525,8 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
       const tag = document.createElement('webview') as WebviewElement
       element = tag
       webviewRef.current = tag
+      // A fresh guest has loaded nothing yet.
+      requestedRef.current = null
       tag.className = css.webview
       tag.setAttribute('name', reservation.lease)
       tag.setAttribute('partition', reservation.partition)
@@ -577,6 +598,7 @@ export const NativeBrowser = forwardRef<NativeBrowserHandle, NativeBrowserProps>
       listeners.abort()
       unsubscribeOpen?.()
       readyRef.current = false
+      requestedRef.current = null
       for (const resolve of waitersRef.current.splice(0)) resolve()
       webviewRef.current = null
       element?.remove()

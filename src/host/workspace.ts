@@ -14,7 +14,8 @@
  */
 
 import { promises as fsp } from 'node:fs'
-import { basename, dirname, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, resolve } from 'node:path'
+import { fileUrlOfPath } from '../core/local-path.ts'
 import { isInside, startPreview, type PreviewHandle } from './preview-server.ts'
 
 /** Structural view of the host subprocess service. */
@@ -42,7 +43,21 @@ export interface PreviewResult {
   url: string
   root: string
   entry: string
+  /** Address to show for the served page: the `file:` URL of its entry. */
+  displayUrl: string
   navigateError?: string
+}
+
+/** One local path served over the private preview server. */
+export interface ServedLocal {
+  /** Token URL the browser loads; it exchanges the token for its cookie. */
+  readonly entryUrl: string
+  /** Address to show for the page: the `file:` URL the person opened. */
+  readonly displayUrl: string
+  /** Directory the server exposes, after canonicalization. */
+  readonly root: string
+  /** URL path of the entry document under the root. */
+  readonly entry: string
 }
 
 /** One project kind plus the command that starts it. */
@@ -77,8 +92,18 @@ export interface WebdevWorkspaceOptions {
   getRoot: () => string | undefined
   /** Host subprocess service; absent hosts still get detection and preview. */
   subprocess?: WorkspaceSubprocess
-  /** Host browser hand-off; failure is reported but does not hide the preview. */
-  navigate: (sessionId: string | undefined, url: string) => Promise<unknown>
+  /**
+   * Host browser hand-off; failure is reported but does not hide the preview.
+   *
+   * `preview` tells the viewer that this page is served by the private preview
+   * server, so the desktop guest loads the token URL itself instead of the
+   * tab's post-redirect address, and the address bar keeps showing the path.
+   */
+  navigate: (
+    sessionId: string | undefined,
+    url: string,
+    options?: { preview?: { guestUrl: string; displayUrl: string } },
+  ) => Promise<unknown>
 }
 
 /** Package-manager command prefix for package.json scripts. */
@@ -150,6 +175,67 @@ export class WebdevWorkspace {
   }
 
   /**
+   * Start one preview for this session, replacing whatever it served before.
+   * @param key - session key owning the preview.
+   * @param target - canonical file or directory to expose.
+   * @param isFile - whether `target` is the entry document itself.
+   * @returns the token URL and the address to show for it.
+   */
+  private async startServed(key: string, target: string, isFile: boolean): Promise<ServedLocal> {
+    const servedRoot = isFile ? dirname(target) : target
+    const entry = isFile ? `/${encodeURIComponent(basename(target))}` : '/'
+    await this.closePreview(key)
+    const handle = await startPreview({ root: servedRoot, entry })
+    this.previews.set(key, handle)
+    return {
+      entryUrl: handle.url,
+      // A directory reads as a directory in the address bar.
+      displayUrl: isFile ? fileUrlOfPath(target) : `${fileUrlOfPath(target)}/`,
+      root: servedRoot,
+      entry,
+    }
+  }
+
+  /**
+   * Serve one local file or directory over the private preview server.
+   *
+   * This is the only path by which a page outside the workspace reaches the
+   * browser: the person opening a file from the panel's address bar is their
+   * own choice, while the agent tools pass `withinWorkspace` and stay inside
+   * the sandbox they were given.
+   * @param sessionId - calling DSH session.
+   * @param path - absolute local path.
+   * @param options - `withinWorkspace` refuses a path outside the workspace.
+   * @returns the token URL and the address to show for it.
+   */
+  async serveLocal(
+    sessionId: string | undefined,
+    path: string,
+    options: { withinWorkspace?: boolean } = {},
+  ): Promise<ServedLocal> {
+    if (!isAbsolute(path)) throw new Error(`not an absolute local path: ${path}`)
+    let target: string
+    try {
+      target = await fsp.realpath(path)
+    } catch {
+      throw new Error(`no such file or directory: ${path}`)
+    }
+    const stat = await fsp.stat(target)
+    const isFile = stat.isFile()
+    if (!isFile && !stat.isDirectory()) throw new Error(`${path} is not a file or a directory`)
+    if (options.withinWorkspace === true) {
+      const workspace = await this.root()
+      if (!isInside(workspace, target)) {
+        throw new Error(
+          `local file is outside the workspace: ${path}. `
+            + 'Ask the person to open it from the panel address bar, or copy it into the workspace.',
+        )
+      }
+    }
+    return await this.startServed(this.keyOf(sessionId), target, isFile)
+  }
+
+  /**
    * Serve one file or directory over the private preview server and navigate
    * the session's browser to it.
    * @param sessionId - calling DSH session.
@@ -158,23 +244,21 @@ export class WebdevWorkspace {
    * @returns the token URL and served root.
    */
   async preview(sessionId: string | undefined, path?: string, root?: string): Promise<PreviewResult> {
-    const key = this.keyOf(sessionId)
     const { target, isFile } = await this.resolveTarget(root, path)
-    const servedRoot = isFile ? dirname(target) : target
-    const entry = isFile ? `/${encodeURIComponent(basename(target))}` : '/'
-    await this.closePreview(key)
-    const handle = await startPreview({ root: servedRoot, entry })
-    this.previews.set(key, handle)
+    const served = await this.startServed(this.keyOf(sessionId), target, isFile)
     let navigateError: string | undefined
     try {
-      await this.options.navigate(sessionId, handle.url)
+      await this.options.navigate(sessionId, served.entryUrl, {
+        preview: { guestUrl: served.entryUrl, displayUrl: served.displayUrl },
+      })
     } catch (error) {
       navigateError = error instanceof Error ? error.message : String(error)
     }
     return {
-      url: handle.url,
-      root: servedRoot,
-      entry,
+      url: served.entryUrl,
+      root: served.root,
+      entry: served.entry,
+      displayUrl: served.displayUrl,
       ...navigateError === undefined ? {} : { navigateError },
     }
   }

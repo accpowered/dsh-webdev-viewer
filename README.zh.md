@@ -11,6 +11,7 @@ DeepSeek Harness（DSH）插件：在**右侧栏**里与 agent 一起开发和�
 - 在页面上点选元素，把结构化引用插入 DSH 输入框。
 - 在选中的元素上调整常用视觉样式并实时预览；把 before/after 变更作为批注发给 agent，由 agent 写源码。
 - 把工作区目录作为静态站点预览，文件变化后自动刷新。
+- 在面板地址栏直接打开**本地 HTML 文件**：粘贴 `C:\site\guide.html` 这样的 Windows 路径、POSIX 路径或 `file:` URL 后回车。标准模式里的桌面 guest 是 Electron `<webview>`，其宿主拒绝 `file:` 导航（`ERR_FAILED`），因此由 host 用同一个私有预览服务器把文件及其同目录资源提供出来，标准视图直接渲染；地址栏显示的是路径而不是 loopback 地址。这条通路只属于面板：不需要 CDP 标签页，真实浏览器不可达时照样可用（CDP 视图仍只显示它自己的标签页）。默认只有本人能打开工作区外的文件；插件设置里的 `allowAgentLocalFiles` 开关打开后，`webdev_navigate` 也能访问工作区之外。
 - 运行项目 dev server（Vite、Next 等），或通过 CDP attach Electron renderer。
 - 给 agent 完整页面信息：带 ref 的 DOM/ARIA snapshot、console、network、截图。
 - 给 agent DOM 真值：`webdev_measure` 返回真实 `getBoundingClientRect()` 盒子、计算样式、滚动盒，以及真正裁掉元素的祖先；`webdev_eval` 可在页面里执行一个表达式。两者的坐标口径与 snapshot 盒子、截图 clip 完全一致，布局结论不必再靠像素猜。截图结果会带上 CSS 视口、实际抓取区域、页面滚动与倍率，并在图片实际尺寸与计划不一致时给出提示。

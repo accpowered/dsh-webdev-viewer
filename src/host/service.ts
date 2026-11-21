@@ -33,6 +33,7 @@ import type { MeasureReport } from '../core/measure.ts'
 import { dispatchInput } from '../core/input.ts'
 import { pickElement } from '../core/pick.ts'
 import { DOCUMENT_TEXT_EXPRESSION, isAuthChallengeText, isLoopbackTarget } from './auth.ts'
+import { parseLocalTarget } from '../core/local-path.ts'
 import {
   classifyBrowserFailure,
   fetchCdpVersion,
@@ -195,6 +196,26 @@ export interface BrowserViewServiceOptions {
    * @default () => 'never'
    */
   fallbackOnUnavailable?: () => AutoFallbackMode
+  /**
+   * Serve one absolute local path from the private preview server.
+   *
+   * The loader wires this to the workspace, which owns the servers; a host
+   * without it reports that local files cannot be shown instead of navigating
+   * to a `file:` URL the desktop guest refuses.
+   */
+  serveLocal?: (
+    sessionId: string | undefined,
+    path: string,
+    options: { withinWorkspace?: boolean },
+  ) => Promise<{ entryUrl: string; displayUrl: string }>
+  /**
+   * Whether the agent's navigation route may serve a file outside the workspace.
+   *
+   * The person's own address-bar route is always allowed; this only widens the
+   * `webdev_navigate` path, whose reading would otherwise hand the model files
+   * the sandbox keeps out of reach. @default () => false
+   */
+  allowAgentLocalFiles?: () => boolean
   /** Browser factory, replaced by tests. */
   openSession?: (options: OpenSessionOptions) => Promise<BrowserSession>
 }
@@ -455,6 +476,10 @@ export class BrowserViewService implements BrowserViewBackend {
   private readonly configuredConfig: () => BrowserConnectionConfig
   private readonly resolveConfig: () => BrowserConnectionConfig
   private readonly authenticatedUrl: BrowserViewServiceOptions['authenticatedUrl']
+  /** Local-file serving seam; absent on a host that mounts no preview server. */
+  private readonly serveLocal: BrowserViewServiceOptions['serveLocal']
+  /** Whether the agent may point the local-file route outside the workspace. */
+  private readonly allowAgentLocalFiles: () => boolean
   private manualEndpoint: string | undefined
   /**
    * The isolated browser a person explicitly asked for while the configured
@@ -492,6 +517,17 @@ export class BrowserViewService implements BrowserViewBackend {
   private nativeSink: BrowserViewSink | undefined
   /** Session that attached the native guest, when known. */
   private nativeSessionId: string | undefined
+  /** Session of the last panel that attached over the socket. */
+  private panelSessionId: string | undefined
+  /**
+   * Pages served by the private preview server, per tab.
+   *
+   * The desktop guest cannot load `file:` and keeps its own cookie jar, so the
+   * panel is told the token URL to load and the address to show. The record is
+   * dropped when the tab visits another origin, which is what stops a later
+   * page from being described by a preview that no longer applies.
+   */
+  private readonly tabPreviews = new Map<string, { guestUrl: string; displayUrl: string; origin: string }>()
   /** Temporary style keys written by the agent tool. */
   private readonly agentPreviewKeys = new Set<string>()
   /** Temporary style keys the panel's own style inspector reported. */
@@ -544,6 +580,8 @@ export class BrowserViewService implements BrowserViewBackend {
       return this.configuredConfig()
     }
     this.authenticatedUrl = options.authenticatedUrl
+    this.serveLocal = options.serveLocal
+    this.allowAgentLocalFiles = options.allowAgentLocalFiles ?? (() => false)
     this.idleCloseDays = options.idleCloseDays ?? (() => 0)
     this.sweepIntervalMs = options.sweepIntervalMs ?? IDLE_SWEEP_INTERVAL_MS
     if (this.sweepIntervalMs > 0) {
@@ -582,7 +620,7 @@ export class BrowserViewService implements BrowserViewBackend {
     const configured = this.configuredConfig()
     const live = this.session !== undefined && !this.session.transport.closed ? this.session : undefined
     const state: BrowserPanelState = {
-      tabs: live?.tabs.list() ?? [],
+      tabs: (live?.tabs.list() ?? []).map(tab => this.withPreview(tab)),
       activeTabId: live === undefined ? null : this.displayedOrDefault(),
       running: live !== undefined,
       mode: config.mode,
@@ -624,6 +662,46 @@ export class BrowserViewService implements BrowserViewBackend {
     }
     if (elements.size === 0) return undefined
     return { active: true, count: elements.size, elements: [...elements.values()] }
+  }
+
+  /**
+   * Annotate one tab with the preview server page it is showing, if any.
+   *
+   * The record only applies while the tab is still on the preview's own origin:
+   * a tab that was navigated elsewhere must not be described by a page it left.
+   * @param tab - tab view straight from the tab manager.
+   * @returns the same view, or a copy carrying its preview.
+   */
+  private withPreview(tab: BrowserTabView): BrowserTabView {
+    const preview = this.tabPreviews.get(tab.id)
+    if (preview === undefined) return tab
+    let origin: string | undefined
+    try {
+      origin = new URL(tab.url).origin
+    } catch {
+      origin = undefined
+    }
+    if (origin !== preview.origin) {
+      this.tabPreviews.delete(tab.id)
+      return tab
+    }
+    return { ...tab, preview: { guestUrl: preview.guestUrl, displayUrl: preview.displayUrl } }
+  }
+
+  /**
+   * Record that one tab shows a page the private preview server serves.
+   * @param tabId - tab that was just navigated.
+   * @param entryUrl - token URL the browser loaded.
+   * @param preview - the guest URL and the address to show for it.
+   */
+  private rememberPreview(tabId: string, entryUrl: string, preview: { guestUrl: string; displayUrl: string }): void {
+    let origin: string
+    try {
+      origin = new URL(entryUrl).origin
+    } catch {
+      return
+    }
+    this.tabPreviews.set(tabId, { ...preview, origin })
   }
 
   /** Drop every temporary-style key and tell the panels the document is clean. */
@@ -683,6 +761,7 @@ export class BrowserViewService implements BrowserViewBackend {
           // Attaching is observation, never operation: a panel that arrived
           // must not create a tab of its own, or the user ends up watching a
           // blank page instead of the one the agent is driving.
+          if (command.sessionId !== undefined) this.panelSessionId = command.sessionId
           this.followPanelSession(command.sessionId)
           sink.send({ v: 1, kind: 'hello', state: this.state() })
           await this.startStreaming()
@@ -781,10 +860,44 @@ export class BrowserViewService implements BrowserViewBackend {
           this.clearPreview()
           return
         }
+        case 'open-local': {
+          // A person typed this into the panel's address bar: the file is theirs
+          // to open, so it is not held to the workspace containment the agent
+          // tools are. Deliberately tab-free: the desktop guest is a webview of
+          // its own, and this must keep working while the CDP source is down.
+          const serveLocal = this.serveLocal
+          if (serveLocal === undefined) {
+            sink.send({
+              v: 1,
+              kind: 'local-preview',
+              requestId: command.requestId,
+              error: 'this host cannot serve local files',
+            })
+            return
+          }
+          try {
+            const served = await serveLocal(this.panelSessionId, command.path, { withinWorkspace: false })
+            sink.send({
+              v: 1,
+              kind: 'local-preview',
+              requestId: command.requestId,
+              preview: { url: served.entryUrl, displayUrl: served.displayUrl },
+            })
+          } catch (error) {
+            sink.send({
+              v: 1,
+              kind: 'local-preview',
+              requestId: command.requestId,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+          return
+        }
         case 'native-attach': {
           if (this.nativeSink !== sink) this.rejectNativeRequests('another panel took the native guest')
           this.nativeSink = sink
           this.nativeSessionId = command.sessionId
+          if (command.sessionId !== undefined) this.panelSessionId = command.sessionId
           return
         }
         case 'native-detach': {
@@ -975,6 +1088,17 @@ export class BrowserViewService implements BrowserViewBackend {
 
   /** Navigate the native guest and report its settled URL/title. */
   async nativeNavigate(url: string): Promise<{ url: string; title: string }> {
+    // The guest is an Electron <webview>: its embedder refuses a file: navigation
+    // (ERR_FAILED), and the panel's own address bar serves local files through
+    // the preview server instead. Saying so beats a raw Electron error.
+    const target = parseLocalTarget(url)
+    if (target.kind === 'file') {
+      throw new Error(
+        'the desktop guest cannot load a local file directly. '
+          + 'Use webdev_navigate with that path (the host serves it from the private preview server and the panel follows it), '
+          + 'or ask the person to open it from the panel address bar.',
+      )
+    }
     const raw = await this.nativeRequest('navigate', { url })
     if (typeof raw !== 'object' || raw === null) return { url, title: '' }
     const payload = raw as Record<string, unknown>
@@ -1189,6 +1313,7 @@ export class BrowserViewService implements BrowserViewBackend {
   async closeTab(tabId: string): Promise<void> {
     const tabs = await this.requireTabs()
     const wasDisplayed = tabId === this.displayedTabId
+    this.tabPreviews.delete(tabId)
     for (const [sessionId, boundTab] of [...this.bindings]) {
       if (boundTab === tabId) this.bindings.delete(sessionId)
     }
@@ -1430,17 +1555,27 @@ export class BrowserViewService implements BrowserViewBackend {
 
   /**
    * Navigate a tab and trace the action.
+   *
+   * A `file:` URL, or an absolute local path, is served by the private preview
+   * server first: the desktop guest refuses `file:` navigations, so the one
+   * destination that works in both views is the preview server's token URL.
+   * This is the agent's route and stays inside the workspace; the person's own
+   * address-bar route is the `open-local` command, which serves the file without
+   * a tab at all.
    * @param sessionId - calling agent session.
-   * @param url - destination.
+   * @param url - destination: a URL, a `file:` URL, or an absolute local path.
    * @param tabId - explicit tab, when the caller named one.
-   * @param options - `newTab` opens an additional tab instead of reusing one.
+   * @param options - `newTab` opens a tab; `preview` marks a served page.
    * @returns the action outcome plus the resulting tab view.
    */
   async navigate(
     sessionId: string | undefined,
     url: string,
     tabId?: string,
-    options: { newTab?: boolean } = {},
+    options: {
+      newTab?: boolean
+      preview?: { guestUrl: string; displayUrl: string }
+    } = {},
   ): Promise<{ outcome: ActionOutcome; tab: BrowserTabView }> {
     return await this.runWithSession(async () => {
       // An explicit request for a new tab wins over a tab id: the caller is
@@ -1448,9 +1583,27 @@ export class BrowserViewService implements BrowserViewBackend {
       const tab = options.newTab === true
         ? await this.openTab(sessionId)
         : await this.doTabFor(sessionId, tabId)
+      const local = options.preview === undefined ? parseLocalTarget(url) : { kind: 'text' as const, value: url }
+      let destination = url
+      let preview = options.preview
+      if (local.kind === 'file') {
+        const serveLocal = this.serveLocal
+        if (serveLocal === undefined) {
+          throw new Error(
+            'this host cannot serve local files; start a preview server (webdev_preview) and navigate to its URL instead',
+          )
+        }
+        const served = await serveLocal(sessionId, local.path, {
+          withinWorkspace: !this.allowAgentLocalFiles(),
+        })
+        destination = served.entryUrl
+        preview = { guestUrl: served.entryUrl, displayUrl: served.displayUrl }
+      }
       try {
-        const outcome = await navigateTo(this.scope(), tab.id, url)
-        await this.topUpAuthTicket(tab.id, url)
+        const outcome = await navigateTo(this.scope(), tab.id, destination)
+        await this.topUpAuthTicket(tab.id, destination)
+        if (preview === undefined) this.tabPreviews.delete(tab.id)
+        else this.rememberPreview(tab.id, destination, preview)
         return { outcome: this.trace('navigate', outcome), tab: this.refreshTab(tab.id) }
       } finally {
         // Every navigation gets its own single retry: a later one may be a
@@ -2091,6 +2244,7 @@ export class BrowserViewService implements BrowserViewBackend {
     this.session = undefined
     this.bindings.clear()
     this.authTopUpSpent.clear()
+    this.tabPreviews.clear()
     this.displayedTabId = null
     this.selectionPinned = false
     return session
@@ -2384,7 +2538,8 @@ export class BrowserViewService implements BrowserViewBackend {
   private refreshTab(tabId: string): BrowserTabView {
     const session = this.session
     if (session === undefined) return { id: tabId, url: '', title: '', loading: false }
-    return session.tabs.list().find(tab => tab.id === tabId) ?? { id: tabId, url: '', title: '', loading: false }
+    const found = session.tabs.list().find(tab => tab.id === tabId)
+    return found === undefined ? { id: tabId, url: '', title: '', loading: false } : this.withPreview(found)
   }
 
   /** Report a transient command failure to the panels without throwing at the caller. */

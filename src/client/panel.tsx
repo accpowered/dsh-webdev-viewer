@@ -43,8 +43,9 @@ import {
   type StateDotState,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { BrowserActionTrace, BrowserFailureReason, BrowserInputEvent, BrowserPanelState, BrowserPickedElement } from '../core/protocol.ts'
+import type { BrowserActionTrace, BrowserFailureReason, BrowserInputEvent, BrowserPanelState, BrowserPickedElement, LocalPreview } from '../core/protocol.ts'
 import { BROWSER_VIEW_API_VERSION, previewKey } from '../core/protocol.ts'
+import { parseLocalTarget } from '../core/local-path.ts'
 import type { BrowserViewLiveTitleStore } from './live-title.ts'
 import { BROWSER_VIEW_PARTS, BROWSER_VIEW_PLUGIN } from './semantic.ts'
 import {
@@ -87,6 +88,15 @@ export type BrowserViewPanelProps = PropsLocale<'webdev'> & Partial<BrowserViewP
   /** Origin override; defaults to the page's own location. */
   readonly location?: { readonly protocol: string; readonly host: string }
 }
+
+/**
+ * How long the panel waits for the host to answer an `open-local` command.
+ *
+ * A host from before that command existed accepts the frame and never answers,
+ * which would leave the bar looking dead; the deadline turns that into a
+ * visible sentence.
+ */
+const LOCAL_REPLY_TIMEOUT_MS = 8000
 
 /** Trace rows kept on screen; older tool calls scroll out of relevance. */
 const TRACE_LIMIT = 5
@@ -221,7 +231,23 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   const [nativeUrl, setNativeUrl] = useState('')
   const [nativeTitle, setNativeTitle] = useState('')
   const [nativeLoading, setNativeLoading] = useState(false)
-  const [nativeAddress, setNativeAddress] = useState('')
+  /**
+   * What the person is typing, or null when the bar shows the page's address.
+   *
+   * A separate draft is what lets the field be emptied: a controlled input
+   * whose value falls back to the address the moment it is empty cannot be
+   * cleared — every deletion of the last character refilled it with the
+   * previous URL.
+   */
+  const [nativeDraft, setNativeDraft] = useState<string | null>(null)
+  /**
+   * A local file this panel opened from disk, served by the host.
+   *
+   * Panel-local on purpose: the desktop guest is its own webview, so a file the
+   * person opened must not depend on the CDP tab existing (the CDP source can be
+   * down, and the person is still looking at the desktop view).
+   */
+  const [localFile, setLocalFile] = useState<LocalPreview | null>(null)
   const [nativeError, setNativeError] = useState<string | null>(null)
   const [styleOpen, setStyleOpen] = useState(false)
   const [styleValues, setStyleValues] = useState<Record<string, string>>({})
@@ -239,6 +265,10 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   const interactRef = useRef(interact)
   interactRef.current = interact
   const lastPointerMoveRef = useRef(0)
+  /** The panel's outstanding `open-local` request, so late answers are ignored. */
+  const localRequestRef = useRef<string | null>(null)
+  /** Deadline for that request, cleared by the answer. */
+  const localTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** Last active tab seen in a state push; a tab switch invalidates the picture. */
   const lastActiveTabRef = useRef<string | null>(null)
   /** Browser source seen in the last state push; a source switch invalidates it too. */
@@ -299,7 +329,15 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
           setHoverPick(null)
           pickRequestRef.current = null
           hoverRequestRef.current = null
+          // A new source or tab: the address bar returns to the page's address
+          // instead of a draft for the page before it.
+          setNativeDraft(null)
+          setNativeError(null)
         }
+        // A served page arriving means the previous native failure is history:
+        // the guest is about to load the preview URL instead of a file: URL.
+        const shownTab = next.tabs.find((tab) => tab.id === next.activeTabId)
+        if (shownTab?.preview !== undefined) setNativeError(null)
         setState(next)
       },
       onFrame: (next) => {
@@ -350,6 +388,23 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
       onPickMode: (enabled) => {
         setPagePickerActive(enabled)
         if (!enabled) setHoverPick(null)
+      },
+      onLocalPreview: (result) => {
+        if (result.requestId !== localRequestRef.current) return
+        localRequestRef.current = null
+        if (localTimerRef.current !== null) {
+          clearTimeout(localTimerRef.current)
+          localTimerRef.current = null
+        }
+        if (result.preview === undefined) {
+          setNativeError(result.error ?? 'the file could not be served')
+          return
+        }
+        setNativeError(null)
+        setLocalFile(result.preview)
+        // The address bar goes back to describing the page: the host's answer
+        // carries the canonical path, which may differ from what was typed.
+        setNativeDraft(null)
       },
       onNativeRequest: (request) => {
         const native = nativeRef.current
@@ -404,7 +459,14 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
   const nativeActive = nativeAvailable && nativeMode
   const pageTitle = activeTab === null || activeTab.title.length === 0 ? undefined : activeTab.title
   const url = activeTab?.url ?? ''
-  const displayUrl = nativeActive ? nativeUrl || url : url
+  // A page the host serves from disk has two addresses: the loopback URL both
+  // browsers load, and the path the person actually opened. The bar shows the
+  // path; the desktop guest loads the loopback URL (a file: navigation is
+  // refused by its embedder). A file this panel opened wins over the tab: the
+  // person asked for it, and the CDP side may not be running at all.
+  const tabPreview = activeTab?.preview ?? null
+  const guestUrl = localFile?.url ?? tabPreview?.guestUrl ?? url
+  const displayUrl = localFile?.displayUrl ?? tabPreview?.displayUrl ?? (nativeActive ? nativeUrl || url : url)
   const displayTitle = nativeActive ? nativeTitle || pageTitle : pageTitle
   const effectiveLoading = nativeActive ? nativeLoading : loading
   // The failure a disconnected panel must explain: the host's classified last
@@ -950,12 +1012,28 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     setPickNotice(null)
     setStyleOpen(false)
     setNativeError(null)
-    if (next) setNativeAddress(nativeUrl || url)
+    // The bar shows the page's address (a served page shows its path), so a mode
+    // switch leaves no draft behind.
+    if (next) setNativeDraft(null)
+  }
+
+  /** Ask the host to serve one local file and load it in the desktop guest. */
+  const openLocalFile = (path: string): void => {
+    const requestId = `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    localRequestRef.current = requestId
+    if (localTimerRef.current !== null) clearTimeout(localTimerRef.current)
+    localTimerRef.current = setTimeout(() => {
+      if (localRequestRef.current !== requestId) return
+      localRequestRef.current = null
+      localTimerRef.current = null
+      setNativeError('the desktop host did not answer; if it is still an older build, restart DSH Desktop and retry')
+    }, LOCAL_REPLY_TIMEOUT_MS)
+    socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'open-local', requestId, path })
   }
 
   const sendPicks = (): void => {
     if (picks.length === 0) return
-    const quote = formatPicks(picks, nativeActive ? nativeUrl || url : url)
+    const quote = formatPicks(picks, displayUrl)
     const accepted = inputActions?.insertQuote(quote)
     if (accepted === true) {
       if (!nativeActive) {
@@ -1021,6 +1099,11 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
     return () => { socketRef.current?.send({ v: BROWSER_VIEW_API_VERSION, kind: 'native-detach' }) }
   }, [nativeActive, status, sessionId])
 
+  // A pending open-local answer must not fire after this body goes away.
+  useEffect(() => () => {
+    if (localTimerRef.current !== null) clearTimeout(localTimerRef.current)
+  }, [])
+
   return (
     <div className={css.root} data-dsh-plugin={BROWSER_VIEW_PLUGIN} data-dsh-part={BROWSER_VIEW_PARTS.panel}>
       <div className={css.toolbar} data-dsh-part={BROWSER_VIEW_PARTS.toolbar}>
@@ -1029,19 +1112,41 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
             <input
               className={css.address}
               type="text"
-              value={nativeAddress.length > 0 ? nativeAddress : displayUrl}
+              // A draft, not the address: an empty field must stay empty while
+              // the person deletes, or the fallback refills it character by
+              // character with the page it is showing.
+              value={nativeDraft ?? displayUrl}
               title={displayUrl.length > 0 ? displayUrl : undefined}
               placeholder={t('panel.native.address')}
               aria-label={t('panel.address.label')}
               spellCheck={false}
-              onChange={(event) => { setNativeAddress(event.currentTarget.value) }}
+              onChange={(event) => { setNativeDraft(event.currentTarget.value) }}
               onFocus={(event) => { event.currentTarget.select() }}
+              // The bar describes the page, not the last draft: leaving it drops
+              // whatever was typed and shows the address again.
+              onBlur={() => { setNativeDraft(null) }}
               onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setNativeDraft(null)
+                  return
+                }
                 if (event.key !== 'Enter') return
                 event.preventDefault()
-                const next = nativeAddress.trim()
+                const next = (nativeDraft ?? '').trim()
                 if (next.length === 0) return
                 setNativeError(null)
+                const target = parseLocalTarget(next)
+                if (target.kind === 'file') {
+                  // The guest's embedder refuses file: navigations, so the host
+                  // serves the file from its private preview server and answers
+                  // with the URL the guest should load.
+                  openLocalFile(target.path)
+                  return
+                }
+                // A web URL replaces the served page; the guest loads it itself.
+                setLocalFile(null)
+                setNativeDraft(null)
                 nativeRef.current?.loadUrl(next)
               }}
             />
@@ -1303,9 +1408,11 @@ export function BrowserViewPanel({ t, sessionId, liveTitle, inputActions, socket
             <NativeBrowser
               ref={nativeRef}
               sessionId={sessionId ?? 'anonymous'}
-              url={url}
+              // The guest loads the page itself: a served page's token URL, or
+              // the tab's own URL when nothing is served.
+              url={guestUrl}
               picking={picking}
-              onUrl={(next) => { setNativeUrl(next); setNativeAddress(next) }}
+              onUrl={(next) => { setNativeUrl(next) }}
               onTitle={(next) => { setNativeTitle(next) }}
               onNavigated={() => {
                 // A real document load discarded every inline/stylesheet override.

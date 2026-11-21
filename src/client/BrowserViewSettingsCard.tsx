@@ -18,6 +18,7 @@ export interface BrowserViewSettings {
   realBrowserEnabled?: boolean
   cdpEndpoint?: string
   idleCloseDays?: number
+  allowAgentLocalFiles?: boolean
 }
 
 /** Card projection bound by the renderer. */
@@ -25,6 +26,7 @@ export interface BrowserViewSettingsCardState extends CardShell {
   realBrowserEnabled: FieldState
   cdpEndpoint: FieldState
   idleCloseDays: FieldState
+  allowAgentLocalFiles: FieldState
 }
 
 /** Registration-side snapshot and write actions. */
@@ -53,6 +55,7 @@ export class BrowserViewSettingsCardController {
       booleanField('realBrowserEnabled'),
       textField('cdpEndpoint'),
       numberField('idleCloseDays', { integer: true, min: 0 }),
+      booleanField('allowAgentLocalFiles'),
     ])
     this.store = this.form.bind(() => this.projection())
   }
@@ -63,6 +66,7 @@ export class BrowserViewSettingsCardController {
       realBrowserEnabled: this.form.field('realBrowserEnabled'),
       cdpEndpoint: this.form.field('cdpEndpoint'),
       idleCloseDays: this.form.field('idleCloseDays'),
+      allowAgentLocalFiles: this.form.field('allowAgentLocalFiles'),
     }
   }
 
@@ -134,6 +138,18 @@ export function BrowserViewSettingsCard(props: BrowserViewSettingsCardProps) {
         {...state.idleCloseDays}
         onEdit={(text) => { props.edit('idleCloseDays', text) }}
         onReset={() => { props.resetField('idleCloseDays') }}
+      />
+      <BooleanField
+        id="settings-webdev-agent-local"
+        label={t('settings.allowAgentLocalFiles')}
+        hint={t('settings.allowAgentLocalFilesHint')}
+        inheritLabel={t('settings.inherit')}
+        onLabel={t('settings.on')}
+        offLabel={t('settings.off')}
+        {...shared}
+        {...state.allowAgentLocalFiles}
+        onEdit={(text) => { props.edit('allowAgentLocalFiles', text) }}
+        onReset={() => { props.resetField('allowAgentLocalFiles') }}
       />
     </PluginSettingsCard>
   )

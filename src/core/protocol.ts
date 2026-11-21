@@ -101,6 +101,29 @@ export interface BrowserFailure {
   mode?: 'isolated' | 'cdp'
 }
 
+/**
+ * A page the host serves from its private preview server.
+ *
+ * The panel's desktop guest is an Electron `<webview>`: it refuses a `file:`
+ * navigation, and it keeps cookies in a partition of its own, so it cannot
+ * reuse the CDP tab's preview cookie. Both problems have one answer — the host
+ * names the URL the guest should load itself.
+ */
+export interface BrowserTabPreview {
+  /**
+   * URL the desktop guest loads.
+   *
+   * This is the preview server's token URL: the guest exchanges the token for
+   * its own cookie, exactly as the CDP tab did.
+   */
+  guestUrl: string
+  /**
+   * The address to show for the page: the local path or `file:` URL the person
+   * opened, not the loopback address that is only an implementation detail.
+   */
+  displayUrl: string
+}
+
 /** One open tab as the panel and the tools see it. */
 export interface BrowserTabView {
   /** Stable CDP target id, the handle tools accept. */
@@ -115,6 +138,12 @@ export interface BrowserTabView {
   sessionId?: string
   /** Whether DSH created this target or adopted an existing real-browser tab. */
   origin?: 'created' | 'adopted'
+  /**
+   * Where the desktop guest must load this page from, when the page is served
+   * by the private preview server (a local file, or `webdev_preview`).
+   * Absent for an ordinary page, which both views load from `url` directly.
+   */
+  preview?: BrowserTabPreview
 }
 
 /** What the header of the panel shows. */
@@ -255,10 +284,28 @@ export interface BrowserActionTrace {
   tone?: 'preview'
 }
 
+/** One page the host serves from the private preview server, as the panel shows it. */
+export interface LocalPreview {
+  /** Token URL the desktop guest loads; the guest exchanges it for its cookie. */
+  url: string
+  /** Address to show for the page: the local path as a `file:` URL. */
+  displayUrl: string
+}
+
 /** Host pushes one of these to every attached panel. */
 export type BrowserViewEvent =
   | { v: 1; kind: 'hello'; state: BrowserPanelState }
   | { v: 1; kind: 'state'; state: BrowserPanelState }
+  | {
+      v: 1
+      kind: 'local-preview'
+      /** Correlates the answer with the panel's `open-local` command. */
+      requestId: string
+      /** The served page, or absent when the file could not be served. */
+      preview?: LocalPreview
+      /** Why the file could not be served. */
+      error?: string
+    }
   | {
       v: 1
       kind: 'frame'
@@ -375,6 +422,16 @@ export type BrowserViewCommand =
   | { v: 1; kind: 'style-preview'; keys: string[] }
   /** Drop every temporary-style key: the page was reloaded or navigated. */
   | { v: 1; kind: 'preview-reset' }
+  /**
+   * Open a local file the person typed into the panel's address bar.
+   *
+   * Only this socket can send it, which is the point: the person opening a file
+   * on their own machine is their choice, so it is not held to the workspace
+   * containment the agent tools are. The host serves the file from its private
+   * loopback preview server and answers with `local-preview`; it never needs a
+   * CDP tab, so the desktop view keeps working while the CDP source is down.
+   */
+  | { v: 1; kind: 'open-local'; requestId: string; path: string }
   | { v: 1; kind: 'native-attach'; sessionId?: string }
   | { v: 1; kind: 'native-detach' }
   | { v: 1; kind: 'native-result'; requestId: string; result?: unknown; error?: string }
@@ -509,6 +566,9 @@ export function isBrowserViewCommand(value: unknown): value is BrowserViewComman
       return Array.isArray(candidate.keys) && candidate.keys.every(key => typeof key === 'string')
     case 'preview-reset':
       return true
+    case 'open-local':
+      return typeof candidate.requestId === 'string'
+        && typeof candidate.path === 'string' && candidate.path.trim().length > 0
     case 'native-attach':
       return candidate.sessionId === undefined || typeof candidate.sessionId === 'string'
     case 'native-detach':

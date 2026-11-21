@@ -187,12 +187,17 @@ export function createBrowserTools(deps: BrowserToolDeps): ToolDefinition[] {
     description: 'Navigate the selected browser tab to a URL and report the resulting page (url, title). '
       + 'This is a real Chromium either launched by the host or attached over CDP, so the page renders, runs scripts, and makes network requests exactly as it would for a user. '
       + 'Use it to inspect a local page or site, to verify rendered markup, or to set up a page before a snapshot, click, or screenshot. '
+      + 'A file: URL or an absolute local path inside the workspace is served through the plugin\'s private preview server first, so the page renders in both the CDP view and the desktop view; a path outside the workspace is refused, because only the person may open those from the panel address bar. '
       + 'After navigating, call webdev_snapshot before clicking anything: refs from before the navigation no longer exist. '
       + 'Without new_tab the call reuses this session\'s current tab, so the console and network buffers start over with the new document. '
       + 'Set new_tab to true to keep the current page and open the URL in an additional tab (webdev_tabs then lists both). '
       + '中文触发词：打开网页、浏览器里看一下、访问这个地址、渲染页面、新标签页。',
     parameters: {
-      url: { type: 'string', required: true, description: 'Absolute URL, including data: and about: URLs.' },
+      url: {
+        type: 'string',
+        required: true,
+        description: 'Absolute URL, including data: and about: URLs; or a file: URL / absolute local path inside the workspace (served by the private preview server).',
+      },
       new_tab: {
         type: 'boolean',
         description: 'When true, open the URL in a new tab and leave the current page untouched; the new tab becomes the active one. Defaults to false.',

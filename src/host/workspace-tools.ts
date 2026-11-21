@@ -94,6 +94,7 @@ export function createWorkspaceTools(deps: WorkspaceToolDeps): ToolDefinition[] 
         additionalProperties: false,
         properties: {
           url: { type: 'string', required: true, description: 'Tokenized loopback URL; the hosted page reads it as a normal URL after the cookie exchange.' },
+          displayUrl: { type: 'string', required: true, description: 'Address the panel shows for the page: the file: URL of the served entry.' },
           root: { type: 'string', required: true, description: 'Absolute directory being served.' },
           entry: { type: 'string', required: true, description: 'Entry path inside the served root.' },
           navigateError: { type: 'string', description: 'Set when the preview started but the browser could not be navigated.' },

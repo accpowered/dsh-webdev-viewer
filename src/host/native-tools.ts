@@ -104,6 +104,7 @@ export function createDesktopTools(deps: DesktopToolDeps): ToolDefinition[] {
     description: 'Navigate the desktop webview the user sees in the right sidebar and report its settled URL/title. '
       + 'Use this, not webdev_navigate, when the panel is showing the desktop browser; the two tools target different page instances. '
       + 'The desktop guest renders natively and needs no CDP attachment. '
+      + 'It cannot load a local file: its Electron embedder refuses file: navigations. For a local page use webdev_navigate, which serves it through the private preview server and the panel follows that tab. '
       + '中文触发词：打开网址、导航桌面视图。',
     parameters: {
       url: { type: 'string', required: true, description: 'Absolute URL to load in the desktop guest.' },

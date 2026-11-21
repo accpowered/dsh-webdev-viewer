@@ -25,9 +25,11 @@ import type {
   BrowserPanelState,
   BrowserPickedElement,
   BrowserPreviewState,
+  BrowserTabPreview,
   BrowserTabView,
   BrowserViewCommand,
   BrowserViewEvent,
+  LocalPreview,
   PreviewElement,
 } from '../core/protocol.ts'
 
@@ -66,6 +68,8 @@ export interface BrowserViewSocketHandlers {
   onAction(trace: BrowserActionTrace): void
   /** A pick gesture resolved, or failed, on the host. */
   onPickResult?(result: { requestId: string; element?: BrowserPickedElement; error?: string }): void
+  /** The host answered an `open-local` command with a served page or a reason. */
+  onLocalPreview?(result: { requestId: string; preview?: LocalPreview; error?: string }): void
   /** The page-side picker was enabled or disabled. */
   onPickMode?(enabled: boolean): void
   /** The host asks the native guest to execute one operation. */
@@ -180,7 +184,17 @@ function readTab(value: unknown): BrowserTabView | null {
     loading: candidate.loading,
     ...(typeof candidate.sessionId === 'string' ? { sessionId: candidate.sessionId } : {}),
     ...(candidate.origin === 'created' || candidate.origin === 'adopted' ? { origin: candidate.origin } : {}),
+    ...readTabPreview(candidate.preview),
   }
+}
+
+/** Narrow the preview-server description of one tab. */
+function readTabPreview(value: unknown): { preview?: BrowserTabPreview } {
+  if (typeof value !== 'object' || value === null) return {}
+  const candidate = value as Record<string, unknown>
+  if (typeof candidate.guestUrl !== 'string' || candidate.guestUrl === '') return {}
+  if (typeof candidate.displayUrl !== 'string' || candidate.displayUrl === '') return {}
+  return { preview: { guestUrl: candidate.guestUrl, displayUrl: candidate.displayUrl } }
 }
 
 /** Narrow one classified failure from the wire. */
@@ -329,6 +343,24 @@ export function parseBrowserViewEvent(value: unknown): BrowserViewEvent | null {
       if (typeof candidate.enabled !== 'boolean') return null
       return { v: BROWSER_VIEW_API_VERSION, kind: 'pick-mode', enabled: candidate.enabled }
     }
+    case 'local-preview': {
+      if (typeof candidate.requestId !== 'string') return null
+      const preview = candidate.preview
+      if (preview !== undefined) {
+        if (typeof preview !== 'object' || preview === null) return null
+        const page = preview as Record<string, unknown>
+        if (typeof page.url !== 'string' || page.url === '') return null
+        if (typeof page.displayUrl !== 'string' || page.displayUrl === '') return null
+        return {
+          v: BROWSER_VIEW_API_VERSION,
+          kind: 'local-preview',
+          requestId: candidate.requestId,
+          preview: { url: page.url, displayUrl: page.displayUrl },
+        }
+      }
+      if (typeof candidate.error !== 'string' || candidate.error === '') return null
+      return { v: BROWSER_VIEW_API_VERSION, kind: 'local-preview', requestId: candidate.requestId, error: candidate.error }
+    }
     case 'native-request': {
       if (typeof candidate.requestId !== 'string' || typeof candidate.op !== 'string') return null
       return {
@@ -430,6 +462,13 @@ export function connectBrowserViewSocket(
         return
       case 'pick-mode':
         handlers.onPickMode?.(event.enabled)
+        return
+      case 'local-preview':
+        handlers.onLocalPreview?.({
+          requestId: event.requestId,
+          ...event.preview === undefined ? {} : { preview: event.preview },
+          ...event.error === undefined ? {} : { error: event.error },
+        })
         return
       case 'native-request':
         handlers.onNativeRequest?.(event)

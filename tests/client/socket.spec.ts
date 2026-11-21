@@ -258,6 +258,31 @@ describe('browser view event narrowing', () => {
     const error = parseBrowserViewEvent({ v: 1, kind: 'error', code: 'boom', message: 'nope' })
     expect(error).toEqual({ v: 1, kind: 'error', code: 'boom', message: 'nope' })
   })
+
+  it('user opens a local file and the answer names the URL to load and the path to show', () => {
+    // Given the host's answer to an open-local command
+    // When the client narrows it
+    // Then the guest URL and the display path survive field for field
+    const served = parseBrowserViewEvent({
+      v: 1,
+      kind: 'local-preview',
+      requestId: 'local-1',
+      preview: { url: 'http://127.0.0.1:4321/__dsh_webdev_bootstrap?token=t', displayUrl: 'file:///C:/site/guide.html' },
+    })
+    expect(served).toEqual({
+      v: 1,
+      kind: 'local-preview',
+      requestId: 'local-1',
+      preview: { url: 'http://127.0.0.1:4321/__dsh_webdev_bootstrap?token=t', displayUrl: 'file:///C:/site/guide.html' },
+    })
+
+    // A refusal keeps its reason, and a page without both addresses is dropped:
+    // half an answer must not reach the address bar.
+    expect(parseBrowserViewEvent({ v: 1, kind: 'local-preview', requestId: 'local-2', error: 'no such file' }))
+      .toEqual({ v: 1, kind: 'local-preview', requestId: 'local-2', error: 'no such file' })
+    expect(parseBrowserViewEvent({ v: 1, kind: 'local-preview', requestId: 'local-3', preview: { url: '' } })).toBeNull()
+    expect(parseBrowserViewEvent({ v: 1, kind: 'local-preview' })).toBeNull()
+  })
 })
 
 describe('browser view socket lifecycle', () => {

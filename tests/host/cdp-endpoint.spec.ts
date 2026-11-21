@@ -20,7 +20,17 @@ describe('real-browser configuration', () => {
       cdpEndpoint: 'http://127.0.0.1:9222',
       idleCloseDays: 3,
       fallbackOnUnavailable: 'never',
+      allowAgentLocalFiles: false,
     })
+  })
+
+  it('operator leaves the agent local-file escape off and can opt into it', () => {
+    // Given the default profile and one that opts in
+    // When the configuration resolves
+    // Then the agent's route into the file system is closed by default and
+    // opened only by the explicit switch
+    expect(effectiveConfig(Config({})).allowAgentLocalFiles).toBe(false)
+    expect(effectiveConfig(Config({ allowAgentLocalFiles: true })).allowAgentLocalFiles).toBe(true)
   })
 
   it('operator edits the idle window and the live reference reports the new value', () => {

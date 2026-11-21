@@ -15,6 +15,7 @@ export interface Config {
   cdpEndpoint: Volatile<string>
   idleCloseDays: Volatile<number>
   fallbackOnUnavailable: Volatile<AutoFallbackMode>
+  allowAgentLocalFiles: Volatile<boolean>
 }
 
 /** Profile-patch shape before the schema adds defaults and live references. */
@@ -23,6 +24,7 @@ export interface ConfigInput {
   cdpEndpoint?: string
   idleCloseDays?: number
   fallbackOnUnavailable?: AutoFallbackMode
+  allowAgentLocalFiles?: boolean
 }
 
 /** Values after defaults and live references have been resolved. */
@@ -31,6 +33,7 @@ export interface ResolvedConfig {
   cdpEndpoint: string
   idleCloseDays: number
   fallbackOnUnavailable: AutoFallbackMode
+  allowAgentLocalFiles: boolean
 }
 
 /** Settings schema exported through the host loader entry. */
@@ -47,6 +50,9 @@ export const Config: z<ConfigInput, Config> = z.object({
   fallbackOnUnavailable: z.union([z.const('never'), z.const('isolated')]).default('never').volatile().description(
     'What to do when realBrowserEnabled points at a browser nobody started. never reports the classified failure and waits for an explicit switch; isolated pre-declares the downgrade for unattended runs and still reports it as state.autoFallback, with the one-click way back kept.',
   ),
+  allowAgentLocalFiles: z.boolean().default(false).volatile().description(
+    'Let the agent open a local file outside the workspace through webdev_navigate as well. Off by default: the person may always open any local file from the panel address bar, while the agent stays inside the workspace it was given.',
+  ),
 })
 
 /** Read the current values, including edits committed without a plugin remount. */
@@ -56,5 +62,6 @@ export function effectiveConfig(config?: Config): ResolvedConfig {
     cdpEndpoint: config?.cdpEndpoint?.get() ?? 'http://127.0.0.1:9222',
     idleCloseDays: config?.idleCloseDays?.get() ?? 3,
     fallbackOnUnavailable: config?.fallbackOnUnavailable?.get() ?? 'never',
+    allowAgentLocalFiles: config?.allowAgentLocalFiles?.get() ?? false,
   }
 }

@@ -130,6 +130,10 @@ export function resolveAuthenticatedUrl(ctx: AuthenticatedUrlContext, url: strin
  * @param ctx - host plugin context carrying webServer and tools.
  */
 export function apply(ctx: Context, config?: RuntimeConfig): void {
+  // The workspace owns the preview servers and the service routes navigations
+  // back through them, so the two are created in one order and wired by closure:
+  // the service's local-file seam only runs after `workspace` is assigned.
+  let workspace: WebdevWorkspace | undefined
   const service = new BrowserViewService({
     resolveConfig: () => {
       const value = effectiveConfig(config)
@@ -156,6 +160,18 @@ export function apply(ctx: Context, config?: RuntimeConfig): void {
     // URL that is only good for this process. A host that mounts none simply
     // keeps showing the authentication page.
     authenticatedUrl: (url: string) => resolveAuthenticatedUrl(ctx, url),
+    // Local files are served, never navigated to: the desktop guest refuses a
+    // file: URL. The workspace owns the preview servers, so the seam is a
+    // closure over it; the panel's address bar is the only caller allowed
+    // outside the workspace.
+    serveLocal: async (sessionId, path, options) => {
+      if (workspace === undefined) throw new Error('the workspace preview service is not mounted')
+      return await workspace.serveLocal(sessionId, path, options)
+    },
+    // The person's address bar is always allowed outside the workspace; this
+    // switch is what widens the agent's own route, read per call so flipping it
+    // applies to the next navigation.
+    allowAgentLocalFiles: () => effectiveConfig(config).allowAgentLocalFiles,
   })
 
   // Resolved per call, not at mount: the screenshot tool must see the
@@ -169,7 +185,7 @@ export function apply(ctx: Context, config?: RuntimeConfig): void {
   }
 
   const { routes, upgrade } = makeRoutes({ backend: service })
-  const workspace = new WebdevWorkspace({
+  const mountedWorkspace = new WebdevWorkspace({
     getRoot: () => {
       try {
         const policy = ctx.get('sandboxPolicy') as { workspaceRoot?: unknown } | undefined
@@ -188,11 +204,14 @@ export function apply(ctx: Context, config?: RuntimeConfig): void {
         return undefined
       }
     })(),
-    navigate: (sessionId, url) => service.navigate(sessionId, url),
+    navigate: (sessionId, url, options) => service.navigate(sessionId, url, undefined, {
+      ...options?.preview === undefined ? {} : { preview: options.preview },
+    }),
   })
+  workspace = mountedWorkspace
   const tools = [
     ...createBrowserTools({ service, saveImage }),
-    ...createWorkspaceTools({ workspace }),
+    ...createWorkspaceTools({ workspace: mountedWorkspace }),
     ...createDesktopTools({ service, saveImage }),
   ]
 
@@ -227,7 +246,7 @@ export function apply(ctx: Context, config?: RuntimeConfig): void {
   // browser in that order. A preview server left open is a listening socket
   // with a token; a process left running outlives the panel that asked for it.
   ctx.effect(() => () => {
-    void workspace.dispose()
+    void mountedWorkspace.dispose()
     void service.dispose()
   }, 'webdev: lifetime')
 }

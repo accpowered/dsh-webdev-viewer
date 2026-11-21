@@ -2,11 +2,12 @@
 
 A DeepSeek Harness (DSH) plugin for building and verifying web and Electron UIs **inside the right sidebar**, together with an agent.
 
-> Status: **v0.1.3 preview**. A native Desktop side-panel browser with element picking, numbered markers,
+> Status: **v0.2.0 preview**. A native Desktop side-panel browser with element picking, numbered markers,
 > notes, a temporary style inspector, static preview with live reload, project runner, Electron/CDP attach,
-> and agent tools that drive the same guest — including HiDPI CDP frames, an always-visible Original/Preview
-> document state, element-hover highlights, and blue style-adjustment traces. Repository:
-> <https://github.com/accpowered/dsh-webdev-viewer>.
+> local files opened from the address bar (served through the private preview server, because the Electron
+> guest refuses `file:`), and agent tools that drive the same guest — including HiDPI CDP frames, an
+> always-visible Original/Preview document state, element-hover highlights, and blue style-adjustment
+> traces. Repository: <https://github.com/accpowered/dsh-webdev-viewer>.
 > The copied upstream client UI suites are excluded from the release gate; core/Host tests pass.
 
 ## What it does
@@ -17,6 +18,7 @@ A DeepSeek Harness (DSH) plugin for building and verifying web and Electron UIs 
 - Select elements with hover/active outlines and persistent numbered markers; add a note to the last pick and insert a structured quote into the DSH composer. The page-side picker works in the native Desktop guest and in the real browser window.
 - Tweak common visual properties (`color`, background, font size, padding, margin, radius) live on the native guest, reset them, and send the temporary change to the agent as a quote. The agent can do the same preview itself with `webdev_desktop_style` (`get`/`set`/`reset`/`inspect`, any CSS property, parent or `::before`/`::after` layers, before/after values) — runtime styles only, never a source write. The status row always shows which document state you are looking at: gray dot + **Original**, or blue dot + **Preview (n)** while overrides are active; hovering the marker highlights the touched elements like DevTools does.
 - Preview a workspace folder over a token-gated loopback server and reload it when files change.
+- Open a **local HTML file** from the desktop view's address bar: paste a Windows path (`C:\site\guide.html`), a POSIX path, or a `file:` URL and press Enter. The desktop guest is an Electron `<webview>`, whose embedder refuses `file:` navigations (`ERR_FAILED`), so the host serves the file and its sibling assets from the same private preview server and the standard view renders it — the address bar keeps showing the path, not the loopback address. This route is panel-local: it needs no CDP tab, so it works while the real-browser endpoint is down (the CDP view keeps its own tabs). Only the person may open a file outside the workspace by default; the `allowAgentLocalFiles` switch (Plugins row config or the Web Extensions card) lets `webdev_navigate` reach outside it too.
 - Run a detected project dev server or an explicit command, stream logs, detect a localhost URL, and open it.
 - Attach to an Electron app's renderer over CDP with `webdev_electron_attach`; pair it with a `webdev_run` launch to capture main-process stdout/stderr via `webdev_logs`.
 - Give the agent full page detail: DOM/ARIA snapshot with refs, console, network, screenshots (PNG or JPEG).
@@ -54,6 +56,9 @@ captured at the panel's CSS size, and a settled page is upgraded to a device-sca
   `webdev_run` launch and `webdev_logs`.
 - **Native network capture is limited.** The `<webview>` tag does not expose request/response events;
   CDP mode remains the full network path.
+- **The desktop guest cannot load `file:` URLs.** Its embedder refuses them, so a local page is
+  served through the private preview server instead (panel address bar, or `webdev_navigate` for a
+  workspace path). `webdev_desktop_navigate` says so instead of returning the raw Electron error.
 - **Web build has no native bridge.** It uses the CDP mirror; the native surface requires DSH Desktop.
 - **Debug ports have no authentication.** They are local code execution; keep them loopback-only and
   close them when finished.
@@ -109,7 +114,7 @@ published at this time.
 - [x] Native Desktop webview + desktop agent tools
 - [x] Element markers, per-pick notes, compact style inspector
 - [x] Electron renderer attach + main-process log workflow
-- [x] GitHub publication and v0.1.3 release candidate
+- [x] GitHub publication and v0.2.0 release candidate
 - [ ] Full upstream client UI test harness and npm registry publication
 
 ## Development

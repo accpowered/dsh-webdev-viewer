@@ -638,3 +638,154 @@ describe('idle sweep', () => {
   })
 })
 
+describe('local files', () => {
+  const ENTRY = 'http://127.0.0.1:4321/__dsh_webdev_bootstrap?token=t&entry=%2Fguide.html'
+  const DISPLAY = 'file:///C:/site/guide.html'
+
+  /**
+   * A fake browser whose document info reads back whatever page was navigated
+   * to last, and whose preview seam answers with one fixed served page.
+   */
+  function localFileBrowser(onServe: (path: string, options: { withinWorkspace?: boolean }) => void = () => undefined): {
+    browser: ReturnType<typeof createFakeBrowser>
+    navigatedUrls: () => string[]
+  } {
+    let lastUrl = ''
+    const browser = createFakeBrowser({
+      serveLocal: async (_sessionId: string | undefined, path: string, options: { withinWorkspace?: boolean }) => {
+        onServe(path, options)
+        return { entryUrl: ENTRY, displayUrl: DISPLAY }
+      },
+      evaluate: (expression) => expression.includes('location.href')
+        ? { result: { value: JSON.stringify({ url: lastUrl, title: 'guide' }) } }
+        : undefined,
+    })
+    const original = browser.transport.onSend
+    browser.transport.onSend = (call) => {
+      if (call.method === 'Page.navigate') lastUrl = String(call.params.url)
+      original?.(call)
+    }
+    return {
+      browser,
+      navigatedUrls: () => browser.transport.callsOf('Page.navigate').map(call => String(call.params.url)),
+    }
+  }
+
+  it('agent navigates to a workspace file and both views learn the page to load', async () => {
+    // Given a host that serves local files, and a path inside the workspace
+    // When the agent navigates to that path
+    // Then the browser loads the preview URL, and the tab carries the guest URL
+    // and the path so the desktop guest and the address bar agree
+    let asked: { path: string; options: { withinWorkspace?: boolean } } | undefined
+    const { browser, navigatedUrls } = localFileBrowser((path, options) => { asked = { path, options } })
+
+    const navigated = await browser.service.navigate('session-a', 'C:\\site\\guide.html')
+
+    expect(asked).toEqual({ path: 'C:\\site\\guide.html', options: { withinWorkspace: true } })
+    expect(navigatedUrls()).toContain(ENTRY)
+    expect(navigated.tab.preview).toEqual({ guestUrl: ENTRY, displayUrl: DISPLAY })
+    expect(browser.service.state().tabs[0]?.preview).toEqual({ guestUrl: ENTRY, displayUrl: DISPLAY })
+  })
+
+  it('person opens a file from the panel address bar and gets a served page without a browser', async () => {
+    // Given a mounted panel whose session is known
+    // When the person types a path outside the workspace and the panel reports it
+    // Then the host serves it without workspace containment, answers with the
+    // URL the desktop guest loads, and never starts or drives a CDP browser
+    let asked: { path: string; options: { withinWorkspace?: boolean } } | undefined
+    const { browser } = localFileBrowser((path, options) => { asked = { path, options } })
+    const { sink, events } = recordingSink()
+    browser.service.attach(sink)
+    await browser.service.handleCommand(sink, { v: 1, kind: 'attach', sessionId: 'session-a' })
+
+    await browser.service.handleCommand(sink, {
+      v: 1,
+      kind: 'open-local',
+      requestId: 'local-1',
+      path: 'C:\\elsewhere\\guide.html',
+    })
+
+    expect(asked).toEqual({ path: 'C:\\elsewhere\\guide.html', options: { withinWorkspace: false } })
+    expect(events.filter(event => event.kind === 'local-preview')).toEqual([{
+      v: 1,
+      kind: 'local-preview',
+      requestId: 'local-1',
+      preview: { url: ENTRY, displayUrl: DISPLAY },
+    }])
+    expect(browser.opens()).toBe(0)
+  })
+
+  it('person opens a file that cannot be served and the panel is told why', async () => {
+    // Given a host whose preview seam has no such file
+    const browser = createFakeBrowser({
+      serveLocal: async () => { throw new Error('no such file or directory: C:\\elsewhere\\nope.html') },
+    })
+    const { sink, events } = recordingSink()
+    browser.service.attach(sink)
+    // When the person types that path
+    await browser.service.handleCommand(sink, {
+      v: 1,
+      kind: 'open-local',
+      requestId: 'local-2',
+      path: 'C:\\elsewhere\\nope.html',
+    })
+    // Then the answer carries the reason and no page
+    expect(events.filter(event => event.kind === 'local-preview')).toEqual([{
+      v: 1,
+      kind: 'local-preview',
+      requestId: 'local-2',
+      error: 'no such file or directory: C:\\elsewhere\\nope.html',
+    }])
+  })
+
+  it('agent asks for a file outside the workspace and the host refuses it', async () => {
+    // Given a host whose preview seam enforces containment
+    const browser = createFakeBrowser({
+      serveLocal: async () => { throw new Error('local file is outside the workspace') },
+    })
+    // When the agent navigates to that file
+    // Then the call fails with the reason instead of opening it
+    await expect(browser.service.navigate('session-a', 'file:///C:/elsewhere/x.html'))
+      .rejects.toThrow(/outside the workspace/)
+  })
+
+  it('profile switch lets the agent open a file outside the workspace', async () => {
+    // Given a host whose profile turned the escape on
+    let asked: { withinWorkspace?: boolean } | undefined
+    const browser = createFakeBrowser({
+      serveLocal: async (_sessionId, _path, options) => {
+        asked = options
+        return { entryUrl: ENTRY, displayUrl: DISPLAY }
+      },
+      allowAgentLocalFiles: () => true,
+    })
+    // When the agent navigates to a path outside the workspace
+    await browser.service.navigate('session-a', 'C:\\elsewhere\\guide.html')
+    // Then the host serves it without containment, as the switch promised
+    expect(asked).toEqual({ withinWorkspace: false })
+  })
+
+  it('navigating away from a served page drops the preview so the next page is described by its own URL', async () => {
+    // Given a tab showing a served local file
+    const { browser } = localFileBrowser()
+    await browser.service.navigate('session-a', 'C:\\site\\guide.html')
+    expect(browser.service.state().tabs[0]?.preview).toBeDefined()
+
+    // When the agent navigates that tab to a web page
+    await browser.service.navigate('session-a', 'https://a.test/')
+
+    // Then the tab no longer claims to be a preview
+    expect(browser.service.state().tabs[0]?.preview).toBeUndefined()
+  })
+
+  it('desktop navigate refuses a local file and names the tool that can open it', async () => {
+    // Given a mounted desktop guest
+    const browser = createFakeBrowser()
+    // When a desktop navigation targets a file
+    // Then it is refused with the reason and the working route, and nothing was sent
+    await expect(browser.service.nativeNavigate('C:\\site\\guide.html'))
+      .rejects.toThrow(/webdev_navigate/)
+    expect(browser.transport.callsOf('Page.navigate')).toEqual([])
+  })
+})
+

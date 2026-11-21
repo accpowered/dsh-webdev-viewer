@@ -10,7 +10,7 @@
  * @module tests/helpers/fake-browser
  */
 
-import { BrowserViewService, type BrowserSession } from '../../src/host/service.ts'
+import { BrowserViewService, type BrowserSession, type BrowserViewServiceOptions } from '../../src/host/service.ts'
 import { TabManager } from '../../src/core/tabs.ts'
 import { FakeTransport } from './fake-cdp.ts'
 
@@ -61,6 +61,13 @@ export interface FakeBrowserOptions {
    * undefined to keep the snapshot/navigation fixtures.
    */
   evaluate?: (expression: string, params: Record<string, unknown>) => unknown
+  /**
+   * Local-file serving seam. Absent by default, like a host that mounts no
+   * preview server; tests that navigate to a file supply it.
+   */
+  serveLocal?: BrowserViewServiceOptions['serveLocal']
+  /** Whether the agent's local-file route may leave the workspace. */
+  allowAgentLocalFiles?: () => boolean
 }
 
 /**
@@ -111,6 +118,8 @@ export function createFakeBrowser(options: FakeBrowserOptions = {}): FakeBrowser
   const service = new BrowserViewService({
     now: options.now ?? (() => 500),
     idleCloseDays: options.idleCloseDays,
+    ...options.serveLocal === undefined ? {} : { serveLocal: options.serveLocal },
+    ...options.allowAgentLocalFiles === undefined ? {} : { allowAgentLocalFiles: options.allowAgentLocalFiles },
     openSession: async (opts): Promise<BrowserSession> => {
       opens += 1
       const failure = options.failLaunch?.()
